@@ -48,8 +48,19 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 .ctrls select{background:var(--surface);border:0;padding:10px 12px;font-size:15px;max-width:min(58vw,320px)}
 .read{max-width:44em;margin:26px auto 0;background:var(--surface);padding:clamp(26px,5vw,64px)}
 .read h2{font-family:var(--font-display);font-weight:300;font-size:26px;line-height:1.25;margin-bottom:30px}
-.read p{font-family:var(--font-read);font-size:var(--read-size);line-height:1.95;margin-bottom:1.05em;text-indent:2em}
+/* 正文用近黑墨色，不用站点那支品牌蓝。深浅必须靠"黑↔灰"来表达：
+   蓝色只是色调差，任何深浅刻度套在蓝上都读成了"蓝的浓淡"，不是"深/浅"。
+   别的阅读器里正文本来就是黑的，深浅才一眼看出——这里对齐同一套口径。 */
+.read p{font-family:var(--font-read);font-size:var(--read-size);line-height:1.95;margin-bottom:1.05em;text-indent:2em;color:#333333}
 .read p:last-child{margin-bottom:0}
+/* 三层就够：情节加深（更重更浓）、普通原文（基准墨色）、水（偏水 / 注水 / 零信息合并成一档灰）。
+   引擎内部仍判五档，那是判定层留的处置余地；落到读的这一页，读者只要"看重的、看平的、跳过的"
+   三眼分明。实色梯度，不用 opacity——透明度在小差距上肉眼看不出来。 */
+.read p[data-tier="plot"]{color:#111111;font-weight:600}
+.read p[data-tier="mid"]{color:#333333}
+.read p[data-tier="weak"],
+.read p[data-tier="fade"],
+.read p[data-tier="zero"]{color:#999999}
 .pager{display:flex;justify-content:space-between;gap:16px;max-width:44em;margin:22px auto 0}
 [hidden]{display:none !important}
 </style>
@@ -160,9 +171,11 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     var h = document.createElement('h2');
     h.textContent = label(c, cur);
     box.appendChild(h);
-    c.paras.forEach(function (t) {
+    var tiers = c.tiers || [];       // 与 paras 一一对应；没有分层信息的书就是 plain（原样）
+    c.paras.forEach(function (t, i) {
       var p = document.createElement('p');
       p.textContent = t;
+      p.setAttribute('data-tier', tiers[i] || 'plain');
       box.appendChild(p);
     });
     $('chaps').value = String(cur);
@@ -170,6 +183,13 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     $('next').disabled = cur >= book.chapters.length - 1;
     window.scrollTo({ top: 0, behavior: 'smooth' });
     saveSpot();
+  }
+
+  // 这本书里有没有读到过分层标记（全是 plain 就是没读到）
+  function hasTiers(b) {
+    return (b.chapters || []).some(function (c) {
+      return (c.tiers || []).some(function (t) { return t && t !== 'plain'; });
+    });
   }
 
   function showBook(name) {
@@ -185,6 +205,10 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     $('meta').textContent = meta.join(' · ');
     fillChaps();
     render();
+    // EPUB 本该带着深浅；一个字都没读回来，说明要么这本没判读过，要么本地服务还是旧的。
+    if (book.kind === 'epub' && !hasTiers(book)) {
+      setStatus('没从文件里读回深浅标记。若这本是工作台判读导出的，请重启本地服务后再拖一次。', false);
+    }
   }
 
   function load(file) {
@@ -236,12 +260,24 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     idb.get('last', function (saved) {
       if (book) return;  // 用户手快已经开了新书，别拿旧的盖上去
       if (!saved || !saved.book || !saved.book.chapters || !saved.book.chapters.length) return;
+      // 旧缓存没有 tiers（加分层之前存下的），拿回来只会显示成一片普通，看不出深浅。
+      // 判掉它，让用户重新选一次文件，走新的解析。
+      if (!saved.book.chapters[0].tiers) { idb.del('last'); return; }
       book = saved.book;
       cur = Math.min(saved.cur || 0, book.chapters.length - 1);
       showBook(saved.name || '上次的书');
       setStatus('上次读到这，接着看。', false);
     });
   });
+
+  // ---------- 服务带不带分层解析 ----------
+  // bookread 是服务启动时 import 进内存的：改过代码没重启，读回来的书就没有深浅标记，
+  // 整页一个颜色。进来先问一句 /api/health，旧版服务当场把原因说清楚。
+  fetch('/api/health').then(function (r) { return r.json(); }).then(function (j) {
+    if (j && j.ok && !j.tiers) {
+      setStatus('本地服务还是旧版：它读不出深浅标记。双击「停止服务.bat」再「启动.bat」，然后重新拖一次文件。', true);
+    }
+  }).catch(function () {});
 })();
 </script>
 </body>

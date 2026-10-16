@@ -36,6 +36,10 @@ python app/server.py --host 0.0.0.0     # 对局域网开放（默认只开本�
 
 已经在跑的时候再启动一次不会报错：它先探一下 `/api/health`，发现是自己就把页面打开、安静退出。
 
+**改过 `app/` 下的 `.py`（比如 `bookread.py`）之后要重启服务**：双击 `停止服务.bat`，再双击
+`启动.bat`。`启动.bat` 探到 8765 上有人在跑时只把页面打开、不会换进程——旧代码会一直留在
+内存里，改了也白改。阅读器页进来自会探一次服务版本，遇到旧版会直接把这句话写在页面上。
+
 三个页面：
 
 | 地址 | 是什么 |
@@ -103,7 +107,7 @@ GitHub 会把提交时间转成 UTC、偏移量强制写成 `+0000`，而本机�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 探活：`{"ok":true,"engine":"<路径>","readonly":true}` |
+| GET | `/api/health` | 探活：`{"ok":true,"engine":"<路径>","readonly":true,"tiers":true}`（`tiers` = 这版服务能读出分层标记） |
 | GET | `/api/state?job=` | 进度与产物，见下 |
 | GET | `/api/jobs` | 做过的书，新的在前 |
 | GET | `/api/skill-rules` | AI 复核实际使用的判定标准（纯文本） |

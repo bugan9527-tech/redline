@@ -320,7 +320,10 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             return self.send_file(ROOT / "index.html")
         if path == "/api/health":
-            return self.send_json({"ok": True, "engine": str(E.ENGINE), "readonly": True})
+            # tiers 是"这版服务带不带分层解析"的标记。bookread 是启动时 import 进内存的，
+            # 改了代码不重启，阅读器就读不出深浅——页面靠这个字段把话说清楚。
+            return self.send_json({"ok": True, "engine": str(E.ENGINE), "readonly": True,
+                                   "tiers": True})
         if path == "/api/skill-rules":
             text = E.skill_rules()
             return self.send_text(text or "（没读到判定标准，AI 复核会用内置的默认口径）")
