@@ -23,12 +23,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,7 +46,7 @@ import com.chaquo.python.Python
 import java.io.File
 
 /**
- * M2 主流程：选书 → 抽查判定 → 出整本 → 阅读。
+ * 主流程：选书 → 抽查判定 → 出整本 → 阅读 →（可选）导出 EPUB。
  *
  * 判定这件事整个跑在手机本地（Chaquopy 把仓库里那份只读引擎塞进 APK），所以这里
  * 一条网都不用连。界面是个单 Activity 的状态机，四段手工阶段各有自己的界面：
@@ -51,7 +54,7 @@ import java.io.File
  *   Picker    还没选书
  *   Working  后台在跑（取书 / 体检 / 整本判定），带进度日志
  *   Confirming 抽查页出来等用户点头（引擎强制的步骤，确认了才出整本）
- *   Reading   阅读版 WebView
+ *   Reading   阅读版 WebView（导出是在它上面压一层对话框，见 EpubStage）
  *
  * 产物一律落在 filesDir/book/ 下，不碰外部存储：SAF 给的是内容 URI，
  * 不用存储权限，取回来也只是我们自己看的副本。
@@ -60,10 +63,26 @@ class MainActivity : ComponentActivity() {
 
     private var stage: Stage by mutableStateOf(Stage.Picker)
 
+    // 导出这件事压在阅读页上（对话框），WebView 不重建，翻到第几章就还在第几章。
+    private var exportStage: EpubStage by mutableStateOf(EpubStage.Off)
+    private var exportOptions: EpubOptions by mutableStateOf(EpubOptions())
+    // 按下「导出」那一刻定下的选项；SAF 的选路径界面回来后用它，避免面板又被改一遍。
+    private var pendingExport: EpubOptions? = null
+
     private val bookPicker =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) acceptBook(uri)
         }
+
+    // SAF 建文件：Android 10+ 拿不到也没必要拿外部存储路径，直接给内容 URI 写字节。
+    private val epubSaver = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/epub+zip"),
+    ) { uri ->
+        val opts = pendingExport
+        pendingExport = null
+        // 用户在系统文件选择器里点了返回：退回选项面板，别把整个导出流程丢掉。
+        if (uri == null || opts == null) goToExport(EpubStage.Panel) else writeEpub(uri, opts)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,7 +98,14 @@ class MainActivity : ComponentActivity() {
                         is Stage.Confirming -> ConfirmScreen(
                             s, onRead = { startBuild() }, onBack = { reset() },
                         )
-                        is Stage.Reading -> ReaderScreen(s, onBack = { reset() })
+                        is Stage.Reading -> ReaderScreen(
+                            s, exportStage, exportOptions,
+                            onOptions = { exportOptions = it },
+                            onOpenPanel = { openExport() },
+                            onStart = { startExport() },
+                            onCloseExport = { closeExport() },
+                            onBack = { reset() },
+                        )
                         is Stage.Failed -> FailScreen(s, onBack = { reset() })
                     }
                 }
@@ -154,6 +180,65 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
+    // ---------- 导出 EPUB：面板 -> SAF 建文件 -> 写字节 ----------
+
+    private fun openExport() = goToExport(EpubStage.Panel)
+
+    private fun closeExport() = goToExport(EpubStage.Off)
+
+    /** 记下这一刻的选项再弹系统文件选择器；落到哪由用户挑。 */
+    private fun startExport() {
+        pendingExport = exportOptions
+        epubSaver.launch(epubFileName())
+    }
+
+    private fun writeEpub(uri: Uri, opts: EpubOptions) {
+        goToExport(EpubStage.Running("打包 EPUB…"))
+        Thread {
+            try {
+                val out = File(bookDir(), "out")
+                require(File(out, "analyzed.json").isFile) { "判定结果不在了，先读一遍整本" }
+                // 先在私有目录落一份，再流拷贝到 SAF 的 URI：Chaquopy 只认普通路径，
+                // 内容 URI 喂给 pack_epub 没法当文件写。
+                val epub = File(out, epubFileName())
+                val info = asStringMap(
+                    Python.getInstance().getModule("runner").callAttr(
+                        "export_epub", out.absolutePath, epub.absolutePath,
+                        opts.preset, opts.lever, null, opts.keeps.toTypedArray(), opts.panel,
+                    ),
+                )
+                contentResolver.openOutputStream(uri).use { sink ->
+                    requireNotNull(sink) { "打不开你选的导出位置" }
+                    epub.inputStream().use { it.copyTo(sink) }
+                }
+                goToExport(EpubStage.Done(describe(info, opts, epub.name)))
+            } catch (e: Throwable) {
+                Log.e(TAG, "导出 EPUB 失败", e)
+                goToExport(EpubStage.Fail("导出失败：\n${e.message ?: e.toString()}"))
+            }
+        }.start()
+    }
+
+    private fun describe(info: Map<String, PyObject>, opts: EpubOptions, name: String): String {
+        val kb = info["bytes"]?.toString()?.toLongOrNull()?.div(1024)
+        return buildString {
+            append("已导出 ").append(name)
+            if (kb != null) append("（").append(kb).append(" KB）")
+            append("\n").append(info["chapters"]).append(" 章 · ")
+            append(info["graded"]).append(" 段带分层样式")
+            append("\n强度 ").append(info["strength"])
+            append(" · 淡化杠杆 ").append(opts.lever)
+            append(" · 面板 ").append(opts.panel)
+            append(" · 保留原文 ").append(opts.keeps.joinToString("、").ifBlank { "无" })
+        }
+    }
+
+    /** 导出文件名：拿显示名去扩展名，再剔掉 SAF 不认的字符。 */
+    private fun epubFileName(): String {
+        val base = bookName().removeSuffix(".txt").trim().ifBlank { "book" }
+        return base.replace(Regex("""[\\/:*?"<>|]"""), "_") + ".epub"
+    }
+
     // ---------- 杂项 ----------
 
     private fun bookDir() = File(filesDir, "book")
@@ -190,7 +275,12 @@ class MainActivity : ComponentActivity() {
     // 不能叫 setStage：stage 是 by mutableStateOf 的属性，编译器生成的 setter 正好同名。
     private fun goTo(s: Stage) = runOnUiThread { stage = s }
 
-    private fun reset() = goTo(Stage.Picker)
+    private fun goToExport(s: EpubStage) = runOnUiThread { exportStage = s }
+
+    private fun reset() {
+        goToExport(EpubStage.Off)
+        goTo(Stage.Picker)
+    }
 
     private fun fail(prefix: String, e: Throwable) {
         Log.e(TAG, prefix, e)
@@ -224,6 +314,38 @@ sealed interface Stage {
 private val TIER_LABEL = mapOf(
     "plot" to "情节", "mid" to "普通", "weak" to "偏水",
     "fade" to "注水", "zero" to "零信息", "sep" to "分隔",
+)
+
+/**
+ * 导出选项。默认全部取中间值：平衡 / 灰字 / 面板全留 / 不保留原文。
+ *
+ * 这几个名字是直接透传给引擎的（preset 就是强强度 0.0/0.55/1.0，keeps 就是 pack_epub
+ * 认的那几个分组），Android 侧不留任何第二套语义。
+ */
+data class EpubOptions(
+    val preset: String = "balance",
+    val lever: String = "color",
+    val panel: String = "full",
+    val keeps: Set<String> = emptySet(),
+)
+
+/** 导出在界面上的几个态。除 Off 外都靠对话框压在阅读页上，WebView 不重建。 */
+sealed interface EpubStage {
+    data object Off : EpubStage
+    data object Panel : EpubStage
+    data class Running(val step: String) : EpubStage
+    data class Done(val message: String) : EpubStage
+    data class Fail(val message: String) : EpubStage
+}
+
+private val PRESET_CHOICES = listOf(
+    "original" to "原始", "balance" to "平衡", "plotonly" to "只看剧情",
+)
+private val LEVER_CHOICES = listOf("color" to "灰字", "opacity" to "透明")
+private val PANEL_CHOICES = listOf("full" to "全部保留", "collapse" to "折叠")
+private val KEEP_CHOICES = listOf(
+    "sys_panel" to "系统面板", "scenery" to "景物", "short_burst" to "短句暴走",
+    "recap" to "回顾", "dialogue" to "对话", "junk" to "零信息段",
 )
 
 /** PyObject dict -> Map<String, PyObject>。Chaquopy 的 asMap 键是 PyObject，得转成字符串才好取。 */
@@ -287,8 +409,18 @@ private fun ConfirmScreen(s: Stage.Confirming, onRead: () -> Unit, onBack: () ->
 }
 
 @Composable
-private fun ReaderScreen(s: Stage.Reading, onBack: () -> Unit) {
-    BackHandler { onBack() }
+private fun ReaderScreen(
+    s: Stage.Reading,
+    export: EpubStage,
+    options: EpubOptions,
+    onOptions: (EpubOptions) -> Unit,
+    onOpenPanel: () -> Unit,
+    onStart: () -> Unit,
+    onCloseExport: () -> Unit,
+    onBack: () -> Unit,
+) {
+    // 导出对话框开着时，返回键先关对话框，别直接把书丢了。
+    BackHandler { if (export == EpubStage.Off) onBack() else onCloseExport() }
     Column(Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
@@ -298,9 +430,119 @@ private fun ReaderScreen(s: Stage.Reading, onBack: () -> Unit) {
                 s.title, fontSize = 15.sp, maxLines = 1,
                 modifier = Modifier.weight(1f),
             )
+            OutlinedButton(onClick = onOpenPanel) { Text("导出 EPUB") }
+            Spacer(Modifier.width(8.dp))
             OutlinedButton(onClick = onBack) { Text("选书") }
         }
         HtmlPane(s.html, Modifier.fillMaxWidth().weight(1f))
+    }
+
+    when (export) {
+        is EpubStage.Panel -> ExportPanelDialog(options, onOptions, onStart, onCloseExport)
+        is EpubStage.Running -> ExportProgressDialog(export.step)
+        is EpubStage.Done -> ExportMessageDialog("导出完成", export.message, onCloseExport)
+        is EpubStage.Fail -> ExportMessageDialog("导出失败", export.message, onCloseExport)
+        EpubStage.Off -> Unit
+    }
+}
+
+/** 口味 / 杠杆 / 面板 / 保留原文。选项直接透传引擎，这里只负责挑。 */
+@Composable
+private fun ExportPanelDialog(
+    options: EpubOptions,
+    onOptions: (EpubOptions) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("导出 EPUB") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                GroupLabel("口味")
+                ChipRow(PRESET_CHOICES, options.preset) { onOptions(options.copy(preset = it)) }
+                Spacer(Modifier.height(10.dp))
+                GroupLabel("淡化杠杆")
+                ChipRow(LEVER_CHOICES, options.lever) { onOptions(options.copy(lever = it)) }
+                Spacer(Modifier.height(10.dp))
+                GroupLabel("系统面板")
+                ChipRow(PANEL_CHOICES, options.panel) { onOptions(options.copy(panel = it)) }
+                Spacer(Modifier.height(10.dp))
+                GroupLabel("保留原文（这几类不淡化）")
+                KEEP_CHOICES.chunked(3).forEach { row ->
+                    Row {
+                        row.forEach { (key, label) ->
+                            FilterChip(
+                                selected = key in options.keeps,
+                                onClick = {
+                                    val keeps = options.keeps
+                                    onOptions(
+                                        options.copy(
+                                            keeps = if (key in keeps) keeps - key else keeps + key,
+                                        ),
+                                    )
+                                },
+                                label = { Text(label, fontSize = 13.sp) },
+                                modifier = Modifier.padding(end = 8.dp, top = 6.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onConfirm) { Text("导出") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun ExportProgressDialog(step: String) {
+    AlertDialog(
+        // 打包中不让点掉：这是本地几秒的事，中途撒手只会留下半截文件。
+        onDismissRequest = {},
+        title = { Text("导出 EPUB") },
+        text = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(12.dp))
+                Text(step, fontSize = 14.sp)
+            }
+        },
+        confirmButton = {},
+    )
+}
+
+@Composable
+private fun ExportMessageDialog(title: String, message: String, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(title) },
+        text = {
+            Text(
+                message, fontSize = 13.sp,
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+            )
+        },
+        confirmButton = { Button(onClick = onClose) { Text("好") } },
+    )
+}
+
+@Composable
+private fun GroupLabel(text: String) {
+    Text(text, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+}
+
+@Composable
+private fun ChipRow(choices: List<Pair<String, String>>, selected: String, onPick: (String) -> Unit) {
+    Row {
+        choices.forEach { (key, label) ->
+            FilterChip(
+                selected = key == selected,
+                onClick = { onPick(key) },
+                label = { Text(label, fontSize = 13.sp) },
+                modifier = Modifier.padding(end = 8.dp, top = 6.dp),
+            )
+        }
     }
 }
 
