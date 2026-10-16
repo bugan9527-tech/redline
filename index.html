@@ -219,21 +219,6 @@ button{font:inherit;color:inherit}
 .read-acts{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:26px}
 .read-note{font-size:var(--t-small);color:var(--muted)}
 
-/* ---------- ai: bring your own model ---------- */
-.ai{background:var(--bg);padding:120px 0}
-.ai-in{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:56px var(--gutter);
-  padding:0 var(--margin);align-items:start}
-.ai-copy{grid-column:1/span 5;min-width:0}
-.ai-h{font-family:var(--font-display);font-weight:300;font-size:var(--t-head);line-height:1.06}
-.ai-p{font-size:var(--t-body);line-height:1.6;margin-top:24px;max-width:38ch}
-.ai-note{font-size:var(--t-small);color:var(--muted);margin-top:18px;max-width:38ch}
-.ai-panel{grid-column:7/span 6;background:var(--surface);padding:44px 40px 40px;min-width:0}
-.ai-panel-h{font-size:var(--t-body);font-weight:700}
-.ai-panel .items{margin-top:20px}
-.ai-cta{display:flex;align-items:center;gap:22px;flex-wrap:wrap;margin-top:32px}
-.ai-rules{font-size:var(--t-small);color:var(--muted);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:2px}
-.ai-rules:hover{color:var(--ink)}
-
 /* ---------- notice: honest when the local service is not up ---------- */
 .notice{position:fixed;left:var(--margin);right:var(--margin);bottom:24px;z-index:60;
   background:var(--ink);color:var(--accent-ink);padding:18px 22px;
@@ -276,10 +261,6 @@ button{font:inherit;color:inherit}
 @media (max-width:1023px){
   .what{grid-template-columns:minmax(0,1fr);gap:28px}
   .manuscript{display:none}
-  .ai{padding:88px 0}
-  .ai-in{grid-template-columns:minmax(0,1fr);gap:40px}
-  .ai-copy,.ai-panel{grid-column:1}
-  .ai-p,.ai-note{max-width:none}
   .read{padding:88px 0}
   .read-in{grid-template-columns:minmax(0,1fr);gap:24px}
 }
@@ -329,11 +310,6 @@ button{font:inherit;color:inherit}
   .band-btn{height:46svh}
   .band-arrow{width:32px;height:32px}
   .band-say{max-width:17ch}
-  .ai{padding:72px 0}
-  .ai-panel{padding:32px 20px}
-  .ai-panel .item-val{white-space:normal;text-align:right}
-  .ai-cta{flex-direction:column;align-items:stretch}
-  .ai-cta .btn{width:100%}
   .notice{padding:16px 18px;bottom:16px}
   .read{padding:72px 0}
   .read-acts{flex-direction:column;align-items:stretch}
@@ -359,7 +335,6 @@ button{font:inherit;color:inherit}
     <nav class="nav-links">
       <a href="#how">它怎么工作</a>
       <a href="/read">阅读器</a>
-      <a href="#ai">接上 AI</a>
       <a href="#faq">常见问题</a>
     </nav>
     <details class="navmenu">
@@ -367,7 +342,6 @@ button{font:inherit;color:inherit}
       <a href="#how">它怎么工作</a>
       <a href="#what">能做什么</a>
       <a href="/read">阅读器</a>
-      <a href="#ai">接上 AI</a>
       <a href="#faq">常见问题</a>
     </details>
     <button class="btn" type="button" data-app>进入工作台</button>
@@ -597,33 +571,6 @@ button{font:inherit;color:inherit}
       alt="一份手抄本的开篇页，文字用细笔写成，边缘有装饰。">
     <figcaption>手抄本时代，重要的话会被看得更清楚。<br>《约翰福音》开篇页，1300 至 1310 年，The Met，公有领域。</figcaption>
   </figure>
-</section>
-
-<!-- ============ 5b. ai: bring your own model, into the workbench ============ -->
-<section class="ai" id="ai">
-  <div class="ai-in">
-    <div class="ai-copy">
-      <h2 class="ai-h reveal">接上你自己的 AI</h2>
-      <p class="ai-p reveal">引擎本体不联网，纯规则就能跑完一本。你想更准一点，就进工作台，填上自己的接口地址、模型名和 Key——它只把规则拿不准的那一段（大约三成到七成）复核一遍，按 skill 的判定标准打分。</p>
-      <p class="ai-note reveal">用哪家由你定。Key 只在这次请求里用，不写进文件、不进日志，刷新页面就没了。</p>
-    </div>
-
-    <div class="ai-panel reveal">
-      <p class="ai-panel-h">这些家一键填好，也支持任何兼容接口</p>
-      <div class="items">
-        <div class="item"><div class="item-row"><span class="item-name">DeepSeek</span><span class="leader"></span><span class="item-val">deepseek-chat</span></div></div>
-        <div class="item"><div class="item-row"><span class="item-name">Kimi（月之暗面）</span><span class="leader"></span><span class="item-val">moonshot-v1-8k</span></div></div>
-        <div class="item"><div class="item-row"><span class="item-name">通义千问</span><span class="leader"></span><span class="item-val">qwen-plus</span></div></div>
-        <div class="item"><div class="item-row"><span class="item-name">智谱 GLM</span><span class="leader"></span><span class="item-val">glm-4-flash</span></div></div>
-        <div class="item"><div class="item-row"><span class="item-name">OpenAI</span><span class="leader"></span><span class="item-val">gpt-4o-mini</span></div></div>
-        <div class="item"><div class="item-row"><span class="item-name">其他</span><span class="leader"></span><span class="item-val">兼容接口即可</span></div></div>
-      </div>
-      <div class="ai-cta">
-        <button class="btn" type="button" data-app>进工作台，接上你的 AI</button>
-        <a class="ai-rules" href="/api/skill-rules" target="_blank" rel="noopener">它用的判定标准，打开看一眼</a>
-      </div>
-    </div>
-  </div>
 </section>
 
 <!-- ============ 5. faq ============ -->
