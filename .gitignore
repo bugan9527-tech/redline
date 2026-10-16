@@ -13,3 +13,14 @@ server.log
 
 # 没有任何页面引用的素材索引
 assets/credits.json
+
+# Android 构建产物与本地配置：体积大、Gradle 可重建，不进版本库
+android/.gradle/
+android/**/build/
+android/.idea/
+android/local.properties
+
+# 临时：引擎 requirement 的自带原生库（libomp / libopenblas / libc++_shared）。
+# 它们是 Chaquopy 已经从 pypi 拉下来的二进制，不该进版本库——
+# 接下去的壳侧 Gradle 任务会在构建时自动从 pip 产物拷进 lib/<abi>/。
+android/app/src/main/jniLibs/
