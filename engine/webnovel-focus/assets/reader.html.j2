@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if print_mode %}{{ print_title }}{% else %}分级阅读 · {{ source }}{% endif %}</title>
+<style>
+  :root {
+    --paper: #f7f5f0;
+    --ink: #23211d;
+    --rule: #ddd8cd;
+    --accent: #8a6a3f;
+    --strength: 0.55;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Songti SC", "SimSun", "Noto Serif CJK SC", "Source Han Serif SC", Georgia, serif;
+    font-size: 18px;
+    line-height: 1.95;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- 控制栏 ---------- */
+  .bar {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(247,245,240,.94);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--rule);
+    padding: 10px 20px;
+    font-family: system-ui, "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+  }
+  .bar .group { display: flex; gap: 8px; align-items: center; }
+  .bar .sep { width: 1px; height: 20px; background: var(--rule); }
+  .bar label { color: #6b665d; }
+  button {
+    font: inherit; padding: 4px 11px; border-radius: 999px;
+    border: 1px solid var(--rule); background: #fff; color: var(--ink);
+    cursor: pointer; transition: .15s;
+  }
+  button:hover { border-color: var(--accent); }
+  button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input[type=range] { width: 110px; accent-color: var(--accent); }
+  .toggle { display: flex; align-items: center; gap: 4px; color: #6b665d; cursor: pointer; }
+  .toggle input { accent-color: var(--accent); margin: 0; }
+  .bar .hint { color: #96908a; font-size: 12px; }
+
+  /* ---------- 正文 ---------- */
+  main { max-width: 42em; margin: 0 auto; padding: 40px 22px 120px; }
+  h1 { font-size: 1.5em; margin: 2.4em 0 1.4em; text-align: center; letter-spacing: .04em; }
+  h1:first-child { margin-top: 0; }
+  .p {
+    margin: 0 0 1.05em;
+    opacity: calc(1 - var(--strength) * var(--dim, 0));
+    transition: opacity .22s ease, font-weight .22s ease;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .p[data-tier="plot"] { --dim: 0; }
+  .p[data-tier="mid"] { --dim: .10; }
+  .p[data-tier="weak"] { --dim: .28; }
+  .p[data-tier="fade"] { --dim: .58; }
+  .p[data-tier="zero"] { --dim: .82; }
+
+  body[data-emphasis="1"] .p[data-tier="plot"] { font-weight: 600; color: #14120f; }
+
+  /* 读者手动纠错：点一下永久保留某段 */
+  .p.keep { --dim: 0 !important; opacity: 1 !important; }
+  .p.keep[data-tier="zero"] { text-decoration: line-through; text-decoration-color: var(--rule); }
+
+  /* 分组开关：把某一类整体还原成原文 */
+  body.keep-sys_panel  .p[data-kind="sys_panel"] { --dim: 0; opacity: 1; }
+  body.keep-scenery    .p[data-flags~="scenery"] { --dim: 0; opacity: 1; }
+  body.keep-short_burst .p[data-flags~="short_burst"] { --dim: 0; opacity: 1; }
+  body.keep-recap      .p[data-flags~="recap"] { --dim: 0; opacity: 1; }
+  body.keep-junk       .p[data-tier="zero"] { --dim: 0; opacity: 1; }
+  /* 「只看剧情」档额外压暗两类非情节信息（默认不动，读者自己开） */
+  body[data-preset="plotonly"] .p[data-flags~="dialogue_scene"] { --dim: .52; }
+  body[data-preset="plotonly"] .p[data-flags~="scenery"] { --dim: .62; }
+
+  /* 分组「保留」规则必须排在 preset 规则之后：两者特异度相同，靠顺序取胜 */
+  body.keep-dialogue   .p[data-flags~="dialogue_scene"] { --dim: 0; opacity: 1; }
+
+  /* ---------- 判定标记（默认关闭） ---------- */
+  .tag { display: none; }
+  body[data-marks="1"] .p { position: relative; padding-left: 52px; }
+  body[data-marks="1"] .p::before {
+    content: attr(data-tier-label);
+    position: absolute; left: 0; top: .35em;
+    font-family: system-ui, sans-serif; font-size: 10px; line-height: 1;
+    padding: 3px 6px; border-radius: 4px;
+    background: #e8e3d8; color: #6b665d; opacity: 1;
+  }
+  body[data-marks="1"] .p[data-tier="plot"]::before { background: #dfe8dc; color: #4a6b45; }
+  body[data-marks="1"] .p[data-tier="zero"]::before { background: #ead9d9; color: #8a4a4a; }
+  body[data-marks="1"] .p:hover::after {
+    content: attr(data-tip);
+    display: block; margin-top: 6px; padding: 8px 10px;
+    background: #fff; border: 1px solid var(--rule); border-radius: 6px;
+    font-family: system-ui, sans-serif; font-size: 12px; color: #6b665d; opacity: 1;
+  }
+
+  .stats { display: flex; gap: 16px; flex-wrap: wrap; color: #6b665d; font-size: 12px; }
+  .stats b { font-weight: 600; color: var(--ink); }
+
+  /* ---------- 章间导航 ---------- */
+  .nav {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; margin: 28px 0 8px;
+    font-family: system-ui, "Microsoft YaHei", sans-serif; font-size: 13px;
+  }
+  .nav a, .nav span { color: var(--accent); text-decoration: none; }
+  .nav a:hover { text-decoration: underline; }
+  .nav .mid { color: #8a857c; }
+
+  /* ---------- 目录 ---------- */
+  .toc { list-style: none; padding: 0; margin: 0; }
+  .toc li {
+    padding: 9px 0; border-bottom: 1px solid var(--rule);
+    display: flex; justify-content: space-between; gap: 14px; align-items: baseline;
+  }
+  .toc a { color: var(--ink); text-decoration: none; flex: 1; }
+  .toc a:hover { color: var(--accent); }
+  .toc .meta { color: #96908a; font-size: 12px; font-family: system-ui, sans-serif; white-space: nowrap; }
+  .toolbar { display: flex; gap: 8px; margin: 14px 0 22px; flex-wrap: wrap; }
+
+  /* ---------- 面板块 ---------- */
+  .panel {
+    border-left: 3px solid var(--rule);
+    padding-left: 12px;
+    margin: 0 0 1.05em;
+    position: relative;
+  }
+  .panel .p { margin-bottom: .25em; }
+
+  .rule {
+    border: 0; border-top: 1px solid var(--rule);
+    margin: 1.8em auto; width: 42%;
+    opacity: .9;
+  }
+  body[data-panel="collapse"] .panel:not(.open) > .p:nth-child(n+2) { display: none; }
+  body[data-panel="collapse"] .panel::after {
+    content: "＋" attr(data-more) " 行";
+    display: inline-block; margin-top: 2px;
+    font-family: system-ui, "Microsoft YaHei", sans-serif; font-size: 11px;
+    color: var(--accent); cursor: pointer; opacity: 1;
+  }
+  body[data-panel="collapse"] .panel.open::after { content: "收起"; }
+  body[data-panel="collapse"] .panel.open > .p:nth-child(n+2) { display: block; }
+</style>
+</head>
+<body class="{% for k in keep_classes|default([]) %}keep-{{ k }} {% endfor %}" data-emphasis="1" data-marks="{{ marks_default|default('0', true) }}" data-preset="balance">
+
+{% if not print_mode %}
+<div class="bar">
+  <div class="group">
+    <label>强度</label>
+    <button class="preset" data-strength="0"    data-preset="original"  aria-pressed="false">原汁原味</button>
+    <button class="preset" data-strength="0.55" data-preset="balance"   aria-pressed="true">平衡</button>
+    <button class="preset" data-strength="1"    data-preset="plotonly"  aria-pressed="false">只看剧情</button>
+    <input type="range" id="strength" min="0" max="1" step="0.05" value="0.55">
+  </div>
+  <div class="sep"></div>
+  <div class="group">
+    <label>保留原文</label>
+    <span class="toggle"><input type="checkbox" data-keep="sys_panel">系统面板</span>
+    <span class="toggle"><input type="checkbox" data-keep="scenery">写景</span>
+    <span class="toggle"><input type="checkbox" data-keep="short_burst">短句连发</span>
+    <span class="toggle"><input type="checkbox" data-keep="recap">复述</span>
+    <span class="toggle"><input type="checkbox" data-keep="dialogue">日常对话</span>
+    <span class="toggle"><input type="checkbox" data-keep="junk">作者话/水印</span>
+  </div>
+  <div class="sep"></div>
+  <div class="group">
+    <label>系统面板</label>
+    <select id="panelmode">
+      <option value="full">保留原文</option>
+      <option value="dim">淡化</option>
+      <option value="collapse" selected>折叠成一行</option>
+    </select>
+  </div>
+  <div class="sep"></div>
+  <div class="group">
+    <span class="toggle"><input type="checkbox" id="emphasis" checked>加深重点</span>
+    <span class="toggle"><input type="checkbox" id="marks">显示判定</span>
+  </div>
+</div>
+{% endif %}
+
+{% if print_mode %}
+<style type="text/css">
+  /* 打印/转 PDF 专用：把交互外壳去掉，强度、页面尺寸按参数烤进样式。
+     opacity 在这里是真实生效的（Chrome/Edge 打印会如实渲染），所以 PDF 与页面所见一致。 */
+  @page { size: {{ print_page_size|default('A5') }}; margin: 13mm 11mm; }
+  :root { --strength: {{ print_strength|default('0.55') }}; }
+  .bar, .nav, .stats, .toolbar, .toc { display: none !important; }
+  main { max-width: none; padding: 0; }
+  .panel > .p { display: block !important; }
+  .p { break-inside: avoid; page-break-inside: avoid; }
+  h1 { break-before: page; page-break-before: always; }
+  h1:first-of-type { break-before: auto; page-break-before: auto; }
+  .p:hover::after, body[data-marks="1"] .p::before { content: none !important; display: none !important; }
+</style>
+{% endif %}
+
+{% macro para(p) -%}
+<p class="p"
+   data-tier="{{ p.tier }}"
+   data-tier-label="{{ p.tier_label }}"
+   data-kind="{{ p.kind }}"
+   data-flags="{{ p.flags_attr }}"
+   data-tip="{{ p.tip }}">{{ p.text }}</p>
+{%- endmacro %}
+
+<main>
+  <div class="stats">
+    {% for s in stats %}<span>{{ s.label }} <b>{{ s.n }}</b> {{ s.pct }}</span>{% endfor %}
+  </div>
+
+{% if toc %}
+  <h1>目录 · {{ source }}</h1>
+  <div class="toolbar">
+    <button id="first">从头开始读</button>
+  </div>
+  <ul class="toc">
+  {% for t in toc %}
+    <li>
+      <a href="{{ t.href }}">{{ t.title }}</a>
+      <span class="meta">情节 {{ t.n_plot }} · 淡化 {{ t.n_fade }} · {{ t.n }} 段</span>
+    </li>
+  {% endfor %}
+  </ul>
+{% else %}
+  {% for ch in chapters %}
+  <h1 id="ch{{ ch.index }}">{{ ch.title }}</h1>
+  {% for it in ch.flow %}
+    {% if it.type == 'sep' %}
+  <hr class="rule">
+    {% elif it.type == 'panel' %}
+  <div class="panel" data-more="{{ it.more }}">
+    {% for p in it.paras %}{{ para(p) }}{% endfor %}
+  </div>
+    {% else %}
+  {{ para(it.paras[0]) }}
+    {% endif %}
+  {% endfor %}
+  {% endfor %}
+
+  {% if nav and (nav.prev or nav.next) %}
+  <div class="nav">
+    {% if nav.prev %}<a class="navlink" href="{{ nav.prev }}">← 上一章</a>{% else %}<span></span>{% endif %}
+    <span class="mid">{% if nav.home %}<a href="{{ nav.home }}">目录</a> · {% endif %}{{ nav.pos }}</span>
+    {% if nav.next %}<a class="navlink" href="{{ nav.next }}">下一章 →</a>{% else %}<span></span>{% endif %}
+  </div>
+  {% endif %}
+{% endif %}
+</main>
+
+{% if not print_mode %}
+<script>
+(function () {
+  var body = document.body;
+  var slider = document.getElementById('strength');
+  var KEEPS = ['sys_panel', 'scenery', 'short_burst', 'recap', 'dialogue', 'junk'];
+  var panelSel = document.getElementById('panelmode');
+  var emphasis = document.getElementById('emphasis');
+  var marks = document.getElementById('marks');
+
+  // 偏好存在 URL 查询串里：file:// 下 localStorage 的同源策略各家不一致，
+  // 查询串是唯一能可靠跨文件传递的方式，翻页时由 syncLinks 带过去。
+  var q = new URLSearchParams(location.search);
+  var state = {
+    s: Math.max(0, Math.min(1, parseFloat(q.get('s') || '0.55'))),
+    p: q.get('p') || 'collapse',
+    k: (q.get('k') || '').split(',').filter(Boolean),
+    e: q.get('e') !== '0',
+    // 页面里烤进去的默认值（抽查判定时是 1）在没有查询串时生效，查询串优先
+    m: q.has('m') ? q.get('m') === '1' : body.dataset.marks === '1'
+  };
+
+  function presetOf(s) {
+    if (s <= 0.001) return 'original';
+    if (s >= 0.999) return 'plotonly';
+    return 'balance';
+  }
+
+  function syncLinks() {
+    var qs = location.search;
+    document.querySelectorAll('a[href$=".html"], a[href*=".html?"]').forEach(function (a) {
+      a.setAttribute('href', a.getAttribute('href').split('?')[0] + qs);
+    });
+  }
+
+  function pushURL() {
+    var sp = new URLSearchParams();
+    sp.set('s', state.s.toFixed(2));
+    sp.set('p', state.p);
+    if (state.k.length) sp.set('k', state.k.join(','));
+    if (!state.e) sp.set('e', '0');
+    if (state.m) sp.set('m', '1');
+    history.replaceState(null, '', location.pathname + '?' + sp.toString());
+    syncLinks();
+  }
+
+  function apply() {
+    document.documentElement.style.setProperty('--strength', state.s);
+    body.dataset.preset = presetOf(state.s);
+    body.dataset.panel = state.p;
+    body.dataset.emphasis = state.e ? '1' : '0';
+    body.dataset.marks = state.m ? '1' : '0';
+    KEEPS.forEach(function (k) { body.classList.toggle('keep-' + k, state.k.indexOf(k) >= 0); });
+
+    slider.value = state.s;
+    panelSel.value = state.p;
+    emphasis.checked = state.e;
+    marks.checked = state.m;
+    document.querySelectorAll('.preset').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(presetOf(parseFloat(b.dataset.strength)) === presetOf(state.s)));
+    });
+    document.querySelectorAll('[data-keep]').forEach(function (cb) {
+      cb.checked = state.k.indexOf(cb.dataset.keep) >= 0;
+    });
+  }
+
+  function update(mutate) { mutate(); apply(); pushURL(); }
+
+  slider.addEventListener('input', function () { update(function () { state.s = parseFloat(slider.value); }); });
+  document.querySelectorAll('.preset').forEach(function (b) {
+    b.addEventListener('click', function () { update(function () { state.s = parseFloat(b.dataset.strength); }); });
+  });
+  panelSel.addEventListener('change', function () { update(function () { state.p = panelSel.value; }); });
+  emphasis.addEventListener('change', function () { update(function () { state.e = emphasis.checked; }); });
+  marks.addEventListener('change', function () { update(function () { state.m = marks.checked; }); });
+  document.querySelectorAll('[data-keep]').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      update(function () {
+        state.k = KEEPS.filter(function (k) {
+          return k === cb.dataset.keep ? cb.checked : state.k.indexOf(k) >= 0;
+        });
+      });
+    });
+  });
+
+  document.querySelectorAll('.p').forEach(function (p) {
+    p.addEventListener('click', function () { p.classList.toggle('keep'); });
+  });
+  document.querySelectorAll('.panel').forEach(function (el) {
+    el.addEventListener('click', function (e) {
+      if (body.dataset.panel === 'collapse') {
+        e.stopPropagation();
+        el.classList.toggle('open');
+      }
+    });
+  });
+
+  var firstBtn = document.getElementById('first');
+  if (firstBtn) {
+    firstBtn.addEventListener('click', function () {
+      var a = document.querySelector('.toc a');
+      if (a) location.href = a.getAttribute('href');
+    });
+  }
+
+  apply();
+  pushURL();
+})();
+</script>
+{% endif %}
+</body>
+</html>

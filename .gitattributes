@@ -1,0 +1,2 @@
+# .bat 必须是 CRLF 行尾，否则 cmd 解析中文会错乱（实测踩过）
+*.bat text eol=crlf

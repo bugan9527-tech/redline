@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深浅 · 工作台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://api.fontshare.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;700&family=Noto+Serif+SC:wght@200;400&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=zodiak@100,300&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#e6dbc7;--surface:#ddd0b9;--ink:#062b8a;--muted:#31509b;--accent-ink:#e6dbc7;
+  --font-display:Zodiak,"Noto Serif SC","Songti SC",SimSun,serif;
+  --font-text:"Hanken Grotesk","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-text);font-size:17px;line-height:1.55}
+a{color:inherit}
+h1,h2,h3,p{margin:0;padding:0}
+img{display:block;max-width:100%}
+button,input,select{font:inherit;color:inherit}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 24px 72px}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:40px}
+.mark{font-family:var(--font-display);font-weight:300;font-size:26px;letter-spacing:.06em;text-decoration:none}
+.top nav a{font-size:15px;text-decoration:none;border-bottom:2px solid transparent;padding-bottom:2px;margin-left:20px}
+.top nav a:hover{border-bottom-color:var(--ink)}
+.top nav .who{font-size:15px;color:var(--muted);margin-left:20px}
+h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54px);line-height:1.05;letter-spacing:-.03em;max-width:22ch}
+.sub{color:var(--muted);max-width:60ch;margin-top:16px}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px;margin-top:44px}
+@media (max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--surface);padding:28px}
+.card h2{font-family:var(--font-display);font-weight:300;font-size:26px;margin-bottom:6px}
+.card p.note{font-size:15px;color:var(--muted);margin-bottom:22px}
+.drop{border:0;background:var(--bg);padding:26px;text-align:left;width:100%;cursor:pointer}
+.drop b{display:block;font-size:18px;margin-bottom:6px}
+.drop span{font-size:15px;color:var(--muted)}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:50px;padding:0 24px;
+  border:0;background:var(--ink);color:var(--accent-ink);cursor:pointer;font-size:17px}
+.btn:hover{background:var(--muted)}
+.btn[disabled]{opacity:.42;cursor:not-allowed}
+.btn-sm{min-height:40px;padding:0 16px;font-size:15px}
+.btn-quiet{background:var(--bg);color:var(--ink)}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:20px}
+.field{display:grid;gap:6px;margin-bottom:16px}
+.field label{font-size:15px;color:var(--muted)}
+.field input[type=text],.field input[type=password],.field input[type=number]{background:var(--bg);border:0;padding:12px 14px;width:100%}
+.switch{display:flex;gap:12px;align-items:center;margin-bottom:18px}
+.switch input{width:20px;height:20px;accent-color:#062b8a}
+.switch span{font-size:15px;color:var(--muted)}
+.hint{font-size:15px;color:var(--muted);margin-top:10px;max-width:52ch}
+.log{background:var(--bg);padding:18px;font-size:15px;line-height:1.6;min-height:120px;max-height:300px;overflow:auto;white-space:pre-wrap}
+.pill{display:inline-block;background:var(--bg);padding:6px 12px;font-size:15px;margin:0 8px 8px 0}
+.links{display:grid;gap:10px;margin-top:18px}
+.links a{font-size:17px;text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:2px}
+.frame{width:100%;height:520px;background:var(--bg);margin-top:20px}
+.status{font-size:15px;color:var(--muted);margin-top:12px}
+.err{color:#8a1c0f}
+.tiers-line{font-size:15px;color:var(--muted);margin-top:14px}
+.pbar{height:14px;background:var(--bg);margin-top:18px;overflow:hidden}
+.pbar i{display:block;height:100%;width:0;background:var(--ink);transition:width .6s ease}
+.pbar.wait i{width:35%;transition:none;animation:sweep 1.5s linear infinite}
+.pbar[hidden]{display:none}
+@keyframes sweep{0%{transform:translateX(-110%)}100%{transform:translateX(300%)}}
+.bar-text{font-size:15px;color:var(--muted);margin-top:10px;min-height:1.5em}
+.bar-text b{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="mark" href="/">深浅</a>
+    <nav><a href="/">回到首页</a><a href="/read">阅读器</a><a href="/api/health" target="_blank">引擎状态</a></nav>
+  </header>
+
+  <h1>放一本 TXT 进来，读成深浅。</h1>
+  <p class="sub">第一步先体检 + 抽查前几章，判定合理再出整本。整条流水线都在这台机器上跑，产物落在 <code>work/</code>。</p>
+
+  <div class="grid">
+    <section class="card">
+      <h2>一 · 选书</h2>
+      <p class="note">吃 TXT 和 EPUB。PDF 要先抽成文本，这层还在做。</p>
+      <button class="drop" id="drop" type="button">
+        <b id="dropName">点这里选一个 TXT 或 EPUB</b>
+        <span id="dropMeta">或者把文件拖到这块上面</span>
+      </button>
+      <input type="file" id="file" accept=".txt,.epub,text/plain,application/epub+zip" hidden>
+      <div class="status" id="status1">还没有选文件。</div>
+      <div id="confirmBox" hidden>
+        <p class="hint" style="margin-top:18px">抽查页已生成：鼠标停在段落上能看到判定依据。<b>确认合理再往下走</b>。</p>
+        <div class="row">
+          <a class="btn btn-sm" id="confirmOpen" href="#" target="_blank">打开抽查页</a>
+          <button class="btn btn-sm" id="goBuild" type="button">判定没问题，出整本</button>
+        </div>
+        <iframe class="frame" id="confirmFrame" title="前几章抽查"></iframe>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>二 · AI 复核（可不接）</h2>
+      <p class="note">引擎本体是纯本地规则，不联网。你接上自己的模型后，它会<b>按 webnovel-focus 这份 skill 的判定标准</b>，只把规则判不准的那一段（默认 0.30~0.70）复核一遍。不接也照样出书。</p>
+      <div class="field">
+        <label for="provider">用哪家（选一下，自动填地址和模型）</label>
+        <select id="provider" style="background:var(--bg);border:0;padding:12px 14px;width:100%">
+          <option value="custom">自定义 / 其他兼容接口</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="kimi">Kimi（月之暗面）</option>
+          <option value="qwen">通义千问（DashScope）</option>
+          <option value="zhipu">智谱 GLM</option>
+          <option value="openai">OpenAI</option>
+        </select>
+      </div>
+      <div class="switch">
+        <input type="checkbox" id="aiOn">
+        <span>开启 AI 复核（用你自己的接口和 Key）</span>
+      </div>
+      <div class="field">
+        <label for="endpoint">接口地址（兼容 OpenAI /chat/completions）</label>
+        <input type="text" id="endpoint" value="https://api.openai.com/v1" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="model">模型名</label>
+        <input type="text" id="model" value="gpt-4o-mini" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="key">API Key</label>
+        <input type="password" id="key" placeholder="sk-..." autocomplete="off">
+      </div>
+      <div class="row">
+        <button class="btn btn-sm btn-quiet" id="aiTest" type="button">测试连接</button>
+        <span class="status" id="aiTestMsg"></span>
+      </div>
+      <p class="hint">Key 只存在你自己这台机器的浏览器里（localStorage），不写进任何文件、不进日志，刷新也不会丢。<br>AI 打分用的标准，就是 skill 自己写的判定规则：<a href="/api/skill-rules" target="_blank">打开看一眼</a>。</p>
+    </section>
+
+    <section class="card">
+      <h2>三 · 进度</h2>
+      <p class="note">逐段判读是本地跑的，不会上传你的书。只有 AI 复核开着时，那几段拿不准的文字才会发给你自己选的接口。</p>
+      <div class="row">
+        <button class="btn" id="build" type="button" disabled>生成阅读版</button>
+        <span class="status" id="phase">待命中</span>
+      </div>
+      <div class="pbar" id="pbar" hidden><i id="pbarFill"></i></div>
+      <div class="bar-text" id="barText"></div>
+      <p class="hint" id="aiEst" hidden>开了 AI 复核，整本一般要 <b>10–20 分钟</b>：引擎先把整本过一遍，再把拿不准的那几批发给你自己选的模型。上面这条进度会一直走，说明它还在干活，不是卡住了。中途刷新也不怕，回来会接着显示进度。</p>
+      <div class="log" id="log">（还没有开始）</div>
+    </section>
+
+    <section class="card">
+      <h2>四 · 拿走</h2>
+      <p class="note">EPUB / PDF 交给你的阅读器看；网页版双击就能读。三档强度不用重跑，EPUB 导出时选一次即可。</p>
+      <div class="row">
+        <button class="btn btn-sm" id="epub" type="button" disabled>导出 EPUB</button>
+        <button class="btn btn-sm btn-quiet" id="pdf" type="button" disabled>导出 PDF</button>
+        <select id="preset" class="btn-sm" style="background:var(--bg);border:0;padding:10px 12px">
+          <option value="balance">平衡</option>
+          <option value="original">原汁原味</option>
+          <option value="plotonly">只看剧情</option>
+        </select>
+      </div>
+      <div class="tiers-line" id="tiers"></div>
+      <div class="links" id="links"></div>
+    </section>
+
+    <section class="card">
+      <h2>五 · 以前的书</h2>
+      <p class="note">这台机器上做过的书，新的在最前面。点一本接着用：没出整本的继续跑，出好的直接下载。</p>
+      <div class="links" id="jobs"></div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  var job = null, timer = null, polling = false, beganAt = 0, resuming = false;
+  var $ = function (id) { return document.getElementById(id); };
+  var NET_TIP = '连不上本地服务：先确认「启动.bat」那个窗口还开着，地址栏是 http://127.0.0.1:8765/app，按 Ctrl+F5 刷新后再试。';
+
+  // ---------- 浏览器记忆：AI 设置和上次任务存在 localStorage，刷新不丢 ----------
+  var store = {
+    get: function (k, d) {
+      try { var v = localStorage.getItem('qs_' + k); return v === null ? d : JSON.parse(v); }
+      catch (e) { return d; }
+    },
+    set: function (k, v) {
+      try {
+        if (v === null) { localStorage.removeItem('qs_' + k); }
+        else { localStorage.setItem('qs_' + k, JSON.stringify(v)); }
+      } catch (e) {}
+    }
+  };
+
+  // ---------- 上传 ----------
+  function upload(file) {
+    $('status1').textContent = '正在上传并体检 ' + file.name + ' …';
+    fetch('/api/upload', { method: 'POST', body: file, headers: { 'x-filename': encodeURIComponent(file.name) } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) { $('status1').textContent = '出错：' + (res.j.error || '上传失败'); return; }
+        job = res.j.job;
+        store.set('job', job);
+        $('status1').textContent = '体检和抽查都好了：' + file.name;
+        $('confirmOpen').href = res.j.confirm;
+        $('confirmFrame').src = res.j.confirm;
+        $('confirmBox').hidden = false;
+        $('build').disabled = false;
+        $('goBuild').disabled = false;
+        startPolling();
+        loadJobs();
+      })
+      .catch(function () { $('status1').textContent = NET_TIP; });
+  }
+
+  $('drop').addEventListener('click', function () { $('file').click(); });
+  $('file').addEventListener('change', function () { if (this.files[0]) upload(this.files[0]); });
+  ['dragenter', 'dragover'].forEach(function (t) {
+    $('drop').addEventListener(t, function (e) { e.preventDefault(); $('drop').style.background = '#ddd0b9'; });
+  });
+  ['dragleave', 'drop'].forEach(function (t) {
+    $('drop').addEventListener(t, function (e) { e.preventDefault(); $('drop').style.background = ''; });
+  });
+  $('drop').addEventListener('drop', function (e) {
+    var f = e.dataTransfer.files[0];
+    if (f) { $('dropName').textContent = f.name; $('dropMeta').textContent = Math.round(f.size / 1024) + ' KB'; upload(f); }
+  });
+
+  // ---------- AI 接口：预设 + 测试连接 ----------
+  var PRESET = {
+    deepseek: { e: 'https://api.deepseek.com/v1', m: 'deepseek-chat' },
+    kimi:     { e: 'https://api.moonshot.cn/v1', m: 'moonshot-v1-8k' },
+    qwen:     { e: 'https://dashscope.aliyuncs.com/compatible-mode/v1', m: 'qwen-plus' },
+    zhipu:    { e: 'https://open.bigmodel.cn/api/paas/v4', m: 'glm-4-flash' },
+    openai:   { e: 'https://api.openai.com/v1', m: 'gpt-4o-mini' }
+  };
+  $('provider').addEventListener('change', function () {
+    var p = PRESET[this.value];
+    if (!p) { return; }
+    $('endpoint').value = p.e; $('model').value = p.m;
+  });
+
+  // AI 设置：进来先恢复，有变动就存
+  (function () {
+    var saved = store.get('ai', null);
+    if (saved) {
+      if (saved.provider) $('provider').value = saved.provider;
+      if (saved.endpoint) $('endpoint').value = saved.endpoint;
+      if (saved.model) $('model').value = saved.model;
+      if (saved.key) $('key').value = saved.key;
+      $('aiOn').checked = !!saved.on;
+    }
+    function save() {
+      store.set('ai', { provider: $('provider').value, on: $('aiOn').checked,
+        endpoint: $('endpoint').value.trim(), model: $('model').value.trim(), key: $('key').value });
+    }
+    ['provider', 'endpoint', 'model', 'key', 'aiOn'].forEach(function (id) {
+      $(id).addEventListener('change', save);
+      $(id).addEventListener('input', save);
+    });
+  })();
+
+  $('aiTest').addEventListener('click', function () {
+    var ep = $('endpoint').value.trim(), md = $('model').value.trim(), key = $('key').value;
+    if (!ep || !md) { $('aiTestMsg').textContent = '先把地址和模型填上。'; return; }
+    if (!key) { $('aiTestMsg').textContent = '先把 Key 填上再测。'; return; }
+    $('aiTestMsg').textContent = '正在试连…';
+    $('aiTest').disabled = true;
+    fetch('/api/ai-test', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint: ep, model: md, key: key }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { $('aiTestMsg').textContent = j.message || (j.ok ? '连上了。' : '没连上。'); })
+      .catch(function () { $('aiTestMsg').textContent = NET_TIP; })
+      .then(function () { $('aiTest').disabled = false; });
+  });
+
+  function syncEst() { $('aiEst').hidden = !$('aiOn').checked; }
+  $('aiOn').addEventListener('change', syncEst);
+  syncEst();
+
+  // ---------- 生成 ----------
+  function build(skipConfirm) {
+    if (!job) return;
+    beganAt = Date.now() / 1000;
+    $('build').disabled = true; $('goBuild').disabled = true; $('epub').disabled = true; $('pdf').disabled = true;
+    var ai = {
+      on: $('aiOn').checked,
+      endpoint: $('endpoint').value.trim(),
+      model: $('model').value.trim(),
+      key: $('key').value,
+      lo: 0.30, hi: 0.70, max: 400
+    };
+    if (ai.on && !ai.key) { $('log').textContent = '开了 AI 复核但没填 Key。填上，或者把开关关掉走纯规则。'; $('build').disabled = false; return; }
+    fetch('/api/build', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job: job, ai: ai }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j.error) { $('log').textContent = j.error; $('build').disabled = false; } })
+      .catch(function () { $('log').textContent = NET_TIP; $('build').disabled = false; });
+  }
+  $('goBuild').addEventListener('click', function () { build(); });
+  $('build').addEventListener('click', function () { build(); });
+
+  // ---------- 导出 ----------
+  function expo(fmt) {
+    if (!job) return;
+    fetch('/api/export', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ job: job, format: fmt, preset: $('preset').value }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j.error) { $('log').textContent += '\n' + j.error; } })
+      .catch(function () { $('log').textContent += '\n' + NET_TIP; });
+  }
+  $('epub').addEventListener('click', function () { expo('epub'); });
+  $('pdf').addEventListener('click', function () { expo('pdf'); });
+
+  // ---------- 轮询 ----------
+  var BUSY = ['build', 'ai', 'render', 'export'];
+  var LABEL = { idle: '待命中', doctor: '正在体检', checked: '等你确认抽查页', build: '正在判读整本',
+                ai: '正在做 AI 复核', render: '正在重渲', export: '正在打包', ready: '好了', error: '出错' };
+
+  function elapsed(s) {
+    var t0 = (s && s.started) || beganAt;
+    if (!t0) return '';
+    var sec = Math.max(0, Math.round(Date.now() / 1000 - t0));
+    var m = Math.floor(sec / 60), r = sec % 60;
+    return (m ? m + ' 分 ' : '') + r + ' 秒';
+  }
+
+  function paintProgress(s) {
+    var bar = $('pbar'), fill = $('pbarFill');
+    if (BUSY.indexOf(s.phase) < 0) { bar.hidden = true; $('barText').textContent = ''; return; }
+    bar.hidden = false;
+    var p = s.progress || {}, total = p.total || 0, done = p.done || 0, bits = [];
+    if (total > 0) {
+      bar.className = 'pbar';
+      fill.style.width = Math.round(100 * done / total) + '%';
+      bits.push('<b>第 ' + done + ' / ' + total + ' 批</b>');
+      if (p.reviewed) bits.push('已复核 ' + p.reviewed + ' 段');
+      if (p.failed) bits.push('有 ' + p.failed + ' 批没返回');
+    } else {
+      bar.className = 'pbar wait';
+      fill.style.width = '';
+    }
+    var used = elapsed(s);
+    if (used) bits.push('已用 ' + used);
+    $('barText').innerHTML = bits.join(' · ');
+  }
+
+  function startPolling() {
+    if (polling) return;
+    polling = true;
+    timer = setInterval(tick, 1200);
+    tick();
+  }
+  function tick() {
+    if (!job) return;
+    fetch('/api/state?job=' + encodeURIComponent(job))
+      .then(function (r) {
+        if (r.status === 404) {          // 任务目录已经不在磁盘上，忘掉它
+          store.set('job', null);
+          job = null;
+          clearInterval(timer); polling = false;
+          $('status1').textContent = '上次的任务已经不在磁盘上了，重新选一本吧。';
+          $('phase').textContent = '待命中';
+          $('build').disabled = true;
+          return null;
+        }
+        return r.json();
+      })
+      .then(function (s) {
+        if (!s) return;
+        if (resuming) { resuming = false; $('status1').textContent = '已恢复上次的任务，接着看。'; }
+        if (s.log && s.log.length) $('log').textContent = s.log.join('\n');
+        $('phase').textContent = LABEL[s.phase] || s.phase;
+        $('phase').className = 'status' + (s.phase === 'error' ? ' err' : '');
+        var busy = BUSY.indexOf(s.phase) >= 0;
+        $('build').disabled = busy || !job;
+        $('epub').disabled = busy || !job;
+        $('pdf').disabled = busy || !job;
+        paintProgress(s);
+        // 恢复上次任务时，把抽查框也亮出来
+        if (s.result && s.result.confirm && $('confirmBox').hidden) {
+          $('confirmOpen').href = s.result.confirm;
+          $('confirmFrame').src = s.result.confirm;
+          $('confirmBox').hidden = false;
+        }
+        if (s.phase === 'ready' && s.result) show(s.result);
+      })
+      .catch(function () {});
+  }
+  function show(r) {
+    var t = r.tiers || {}, order = ['plot', 'mid', 'weak', 'fade', 'zero', 'sep'];
+    var name = { plot: '情节', mid: '普通', weak: '偏水', fade: '注水', zero: '零信息', sep: '分隔' };
+    $('tiers').textContent = order.filter(function (k) { return t[k]; })
+      .map(function (k) { return name[k] + ' ' + t[k]; }).join(' · ');
+    var html = (r.reader ? '<a href="' + r.reader + '" target="_blank">打开阅读版</a>' : '') +
+               '<a href="' + r.confirm + '" target="_blank">再看一遍抽查页</a>' +
+               '<a href="' + r.report + '" target="_blank">逐段对照表 report.txt</a>';
+    (r.files || []).forEach(function (f) {
+      html += '<a href="' + f.url + '?dl=1">下载 ' + f.name + '（' + f.kb + ' KB）</a>';
+    });
+    $('links').innerHTML = html;
+  }
+
+  // ---------- 以前的书：把 work/ 里做过的书列出来，点一本接着用 ----------
+  var JOB_PHASE = { ready: '已出书', checked: '待出整本', idle: '只有源文件' };
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function resume(which) {
+    job = which;
+    store.set('job', job);
+    resuming = true;
+    $('log').textContent = '（还没有开始）';
+    $('links').innerHTML = '';
+    startPolling();
+  }
+
+  function loadJobs() {
+    fetch('/api/jobs').then(function (r) { return r.json(); }).then(function (j) {
+      var list = (j && j.jobs) || [];
+      if (!list.length) { $('jobs').innerHTML = '<span class="status">还没有做过书。</span>'; return; }
+      $('jobs').innerHTML = list.map(function (it) {
+        return '<a href="#" data-job="' + esc(it.job) + '">' + esc(it.name) +
+               '（' + (JOB_PHASE[it.phase] || it.phase) + '）</a>';
+      }).join('');
+      [].forEach.call($('jobs').querySelectorAll('[data-job]'), function (a) {
+        a.addEventListener('click', function (e) {
+          e.preventDefault();
+          resume(a.getAttribute('data-job'));
+        });
+      });
+    }).catch(function () {});
+  }
+
+  // ---------- 进来就恢复上次的任务：在跑就接着看进度，好了就亮产物 ----------
+  var savedJob = store.get('job', null);
+  if (savedJob) {
+    job = savedJob;
+    resuming = true;
+    $('status1').textContent = '找到了上次的任务，正在恢复状态…';
+    startPolling();
+  }
+  loadJobs();
+})();
+</script>
+</body>
+</html>

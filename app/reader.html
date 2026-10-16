@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深浅 · 阅读器</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://api.fontshare.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;700&family=Noto+Serif+SC:wght@200;400&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=zodiak@100,300&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#e6dbc7;--surface:#ddd0b9;--ink:#062b8a;--muted:#31509b;--accent-ink:#e6dbc7;
+  --font-display:Zodiak,"Noto Serif SC","Songti SC",SimSun,serif;
+  --font-text:"Hanken Grotesk","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-read:"Noto Serif SC","Songti SC",SimSun,serif;
+  --read-size:19px;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-text);font-size:17px;line-height:1.6}
+a{color:inherit}
+h1,h2,p{margin:0;padding:0}
+button{font:inherit;color:inherit}
+:focus-visible{outline:3px solid currentColor;outline-offset:3px}
+.wrap{max-width:1120px;margin:0 auto;padding:32px 24px 80px}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:44px}
+.mark{font-family:var(--font-display);font-weight:300;font-size:26px;letter-spacing:.06em;text-decoration:none}
+.top nav a{font-size:15px;text-decoration:none;border-bottom:2px solid transparent;padding-bottom:2px;margin-left:20px}
+.top nav a:hover{border-bottom-color:var(--ink)}
+h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54px);line-height:1.05;letter-spacing:-.03em}
+.sub{color:var(--muted);max-width:58ch;margin-top:16px}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:50px;padding:0 24px;border:0;background:var(--ink);color:var(--accent-ink);cursor:pointer;font-size:17px}
+.btn:hover{background:var(--muted)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.btn-sm{min-height:40px;padding:0 14px;font-size:15px}
+.btn-quiet{background:var(--surface);color:var(--ink)}
+.btn-quiet:hover{background:var(--bg)}
+.drop{margin-top:36px;background:var(--surface);padding:36px;text-align:left;width:100%;border:0;cursor:pointer;display:block}
+.drop b{display:block;font-family:var(--font-display);font-weight:300;font-size:24px;margin-bottom:8px}
+.drop span{font-size:15px;color:var(--muted)}
+.drop:hover{background:var(--bg)}
+.status{font-size:15px;color:var(--muted);margin-top:14px}
+.err{color:#8a1c0f}
+.bar{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-top:32px}
+.meta{font-size:15px;color:var(--muted)}
+.ctrls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ctrls select{background:var(--surface);border:0;padding:10px 12px;font-size:15px;max-width:min(58vw,320px)}
+.read{max-width:44em;margin:26px auto 0;background:var(--surface);padding:clamp(26px,5vw,64px)}
+.read h2{font-family:var(--font-display);font-weight:300;font-size:26px;line-height:1.25;margin-bottom:30px}
+.read p{font-family:var(--font-read);font-size:var(--read-size);line-height:1.95;margin-bottom:1.05em;text-indent:2em}
+.read p:last-child{margin-bottom:0}
+.pager{display:flex;justify-content:space-between;gap:16px;max-width:44em;margin:22px auto 0}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="mark" href="/">深浅</a>
+    <nav><a href="/">首页</a><a href="/app">工作台</a></nav>
+  </header>
+
+  <h1>手里的书，拿来就读。</h1>
+  <p class="sub">TXT 或 EPUB 放进来，自动分好章节，就在这一页读完。全部在你自己的机器上跑，不上传、不改写。</p>
+
+  <button class="drop" id="drop" type="button">
+    <b id="dropName">点这里选一个 TXT 或 EPUB</b>
+    <span id="dropMeta">也可以把文件拖到这块上面</span>
+  </button>
+  <input type="file" id="file" accept=".txt,.epub,text/plain,application/epub+zip" hidden>
+  <div class="status" id="status">还没有选文件。</div>
+
+  <div id="view" hidden>
+    <div class="bar">
+      <div class="meta" id="meta"></div>
+      <div class="ctrls">
+        <select id="chaps" aria-label="章节目录"></select>
+        <button class="btn btn-sm btn-quiet" id="smaller" type="button" aria-label="字小一点">字小</button>
+        <button class="btn btn-sm btn-quiet" id="bigger" type="button" aria-label="字大一点">字大</button>
+        <button class="btn btn-sm btn-quiet" id="reset" type="button">换个文件</button>
+      </div>
+    </div>
+    <article class="read" id="read"></article>
+    <div class="pager">
+      <button class="btn btn-sm btn-quiet" id="prev" type="button">上一章</button>
+      <button class="btn btn-sm btn-quiet" id="next" type="button">下一章</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var book = null, bookName = '', cur = 0, size = 19;
+  try { size = Math.min(26, Math.max(16, parseInt(localStorage.getItem('qs_read_size'), 10) || 19)); } catch (e) {}
+
+  // ---------- 本地存书（IndexedDB）：刷新后书和读到的章节都还在 ----------
+  var idb = {
+    db: null,
+    open: function (cb) {
+      var req;
+      try { req = indexedDB.open('qs_reader', 1); } catch (e) { cb && cb(); return; }
+      req.onupgradeneeded = function () { req.result.createObjectStore('kv'); };
+      req.onsuccess = function () { idb.db = req.result; if (book) saveSpot(); cb && cb(); };
+      req.onerror = function () { cb && cb(); };
+    },
+    set: function (k, v) {
+      if (!idb.db) return;
+      try { idb.db.transaction('kv', 'readwrite').objectStore('kv').put(v, k); } catch (e) {}
+    },
+    get: function (k, cb) {
+      if (!idb.db) { cb(null); return; }
+      var req;
+      try { req = idb.db.transaction('kv', 'readonly').objectStore('kv').get(k); }
+      catch (e) { cb(null); return; }
+      req.onsuccess = function () { cb(req.result || null); };
+      req.onerror = function () { cb(null); };
+    },
+    del: function (k) {
+      if (!idb.db) return;
+      try { idb.db.transaction('kv', 'readwrite').objectStore('kv').delete(k); } catch (e) {}
+    }
+  };
+
+  function saveSpot() {
+    if (book) idb.set('last', { name: bookName, book: book, cur: cur });
+  }
+
+  function applySize() {
+    document.documentElement.style.setProperty('--read-size', size + 'px');
+    try { localStorage.setItem('qs_read_size', String(size)); } catch (e) {}
+  }
+  applySize();
+
+  function setStatus(text, isErr) {
+    $('status').textContent = text || '';
+    $('status').className = 'status' + (isErr ? ' err' : '');
+  }
+
+  function label(c, i) {
+    return c.title || ('第 ' + (i + 1) + ' 节');
+  }
+
+  function fillChaps() {
+    var sel = $('chaps');
+    sel.innerHTML = '';
+    book.chapters.forEach(function (c, i) {
+      var o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = label(c, i);
+      sel.appendChild(o);
+    });
+  }
+
+  function render() {
+    var c = book.chapters[cur];
+    var box = $('read');
+    box.innerHTML = '';
+    var h = document.createElement('h2');
+    h.textContent = label(c, cur);
+    box.appendChild(h);
+    c.paras.forEach(function (t) {
+      var p = document.createElement('p');
+      p.textContent = t;
+      box.appendChild(p);
+    });
+    $('chaps').value = String(cur);
+    $('prev').disabled = cur <= 0;
+    $('next').disabled = cur >= book.chapters.length - 1;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    saveSpot();
+  }
+
+  function showBook(name) {
+    bookName = name;
+    $('dropName').textContent = name;
+    $('dropMeta').textContent = '换一本就再点这里';
+    setStatus('', false);
+    $('view').hidden = false;
+    var meta = [book.kind === 'epub' ? 'EPUB' : 'TXT'];
+    if (book.title) meta.unshift(book.title);
+    meta.push(book.chapters.length + ' 章');
+    meta.push((book.chars || 0).toLocaleString('zh-CN') + ' 字');
+    $('meta').textContent = meta.join(' · ');
+    fillChaps();
+    render();
+  }
+
+  function load(file) {
+    setStatus('正在读 ' + file.name + ' …', false);
+    fetch('/api/read', { method: 'POST', body: file, headers: { 'x-filename': encodeURIComponent(file.name) } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || res.j.error) {
+          setStatus('出错：' + ((res.j && res.j.error) || '读不出来'), true);
+          return;
+        }
+        book = res.j;
+        cur = 0;
+        showBook(file.name);
+      })
+      .catch(function (e) { setStatus('出错：' + e.message, true); });
+  }
+
+  $('drop').addEventListener('click', function () { $('file').click(); });
+  $('file').addEventListener('change', function () { if (this.files[0]) load(this.files[0]); });
+  ['dragenter', 'dragover'].forEach(function (t) {
+    $('drop').addEventListener(t, function (e) { e.preventDefault(); });
+  });
+  ['dragleave', 'drop'].forEach(function (t) {
+    $('drop').addEventListener(t, function (e) { e.preventDefault(); });
+  });
+  $('drop').addEventListener('drop', function (e) {
+    var f = e.dataTransfer.files[0];
+    if (f) load(f);
+  });
+
+  $('chaps').addEventListener('change', function () { cur = parseInt(this.value, 10) || 0; render(); });
+  $('prev').addEventListener('click', function () { if (cur > 0) { cur -= 1; render(); } });
+  $('next').addEventListener('click', function () { if (book && cur < book.chapters.length - 1) { cur += 1; render(); } });
+  $('bigger').addEventListener('click', function () { size = Math.min(26, size + 1); applySize(); });
+  $('smaller').addEventListener('click', function () { size = Math.max(16, size - 1); applySize(); });
+  $('reset').addEventListener('click', function () {
+    book = null; cur = 0;
+    idb.del('last');
+    $('view').hidden = true;
+    $('file').value = '';
+    $('dropName').textContent = '点这里选一个 TXT 或 EPUB';
+    $('dropMeta').textContent = '也可以把文件拖到这块上面';
+    setStatus('还没有选文件。', false);
+  });
+
+  // ---------- 进来先翻翻上次读到哪：书还在就接着读 ----------
+  idb.open(function () {
+    idb.get('last', function (saved) {
+      if (book) return;  // 用户手快已经开了新书，别拿旧的盖上去
+      if (!saved || !saved.book || !saved.book.chapters || !saved.book.chapters.length) return;
+      book = saved.book;
+      cur = Math.min(saved.cur || 0, book.chapters.length - 1);
+      showBook(saved.name || '上次的书');
+      setStatus('上次读到这，接着看。', false);
+    });
+  });
+})();
+</script>
+</body>
+</html>

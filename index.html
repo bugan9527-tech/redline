@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深浅 · 把网文读成深浅</title>
+<meta name="description" content="放一本中文网文 TXT 进去，逐段判读：情节压深，注水退浅。深浅由你调，原文一个字不改，输出 EPUB / PDF / HTML。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://api.fontshare.com">
+<link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;700&family=Noto+Serif+SC:wght@200;400&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=zodiak@100,300&display=swap" rel="stylesheet">
+<script>document.documentElement.className += ' js';</script>
+<style>
+:root{
+  /* palette: sand paper, one cobalt doing all the work */
+  --bg:#e6dbc7;
+  --surface:#ddd0b9;
+  --ink:#062b8a;
+  --muted:#31509b;
+  --accent:#062b8a;
+  --accent-ink:#e6dbc7;
+
+  /* five type steps, then the three compositions */
+  --t-small:15px;
+  --t-body:18px;
+  --t-lead:clamp(20px,1.7vw,26px);
+  --t-head:clamp(30px,3.1vw,52px);
+  --t-display:clamp(38px,6.6vw,104px);
+  --t-specimen:clamp(180px,34vw,520px);
+  --t-band:clamp(88px,28vw,460px);
+  --t-mark:clamp(104px,32vw,440px);
+
+  --margin:20px;
+  --gutter:24px;
+  --font-display:Zodiak,"Noto Serif SC","Songti SC",SimSun,serif;
+  --font-text:"Hanken Grotesk","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+}
+@media (min-width:768px){:root{--margin:48px}}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;overflow-x:clip}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--font-text);font-size:var(--t-body);line-height:1.55;
+  -webkit-font-smoothing:antialiased;overflow-x:clip;
+}
+h1,h2,h3,p,figure,blockquote,ol,ul{margin:0;padding:0}
+ol,ul{list-style:none}
+img{display:block;max-width:100%;height:auto}
+a{color:inherit}
+button{font:inherit;color:inherit}
+:focus-visible{outline:3px solid currentColor;outline-offset:3px}
+.wrap{padding:0 var(--margin)}
+
+/* ---------- type roles ---------- */
+.h{font-family:var(--font-display);font-weight:300;letter-spacing:-0.01em;line-height:1.06}
+.h-section{font-size:var(--t-head);margin:0}
+
+/* ---------- the one button ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-height:52px;padding:0 26px;border:0;border-radius:0;
+  background:var(--ink);color:var(--accent-ink);
+  font-size:var(--t-body);cursor:pointer;
+  transition:background-color .18s ease,color .18s ease,transform .18s ease;
+}
+.btn:hover{background:var(--muted)}
+.btn:active{transform:translateY(1px)}
+.btn-sm{min-height:38px;padding:0 16px;font-size:var(--t-small)}
+
+/* ---------- motion ---------- */
+.js .mask-i{transform:translateY(106%);transition:transform .9s cubic-bezier(.16,.84,.24,1)}
+.loaded .mask-i{transform:none}
+.loaded .mask:nth-of-type(2) .mask-i{transition-delay:.11s}
+.js .hero-sub,.js .nav{opacity:0;transform:translateY(14px);transition:opacity .8s .45s ease-out,transform .8s .45s ease-out}
+.loaded .hero-sub,.loaded .nav{opacity:1;transform:none}
+.js .reveal{opacity:0;transform:translateY(26px);transition:opacity .62s ease-out,transform .62s ease-out}
+.js .reveal.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){
+  .js .mask-i{transform:none;transition-duration:.01s}
+  .js .hero-sub,.js .nav,.js .reveal{opacity:1;transform:none;transition-duration:.01s}
+  .band img{transition-duration:.01s}
+  .seg-text{transition-duration:.01s}
+}
+
+/* ---------- 1. hero: void, then statement on axis ---------- */
+.hero{position:relative;height:100svh;display:grid;grid-template-columns:42% minmax(0,1fr);
+  align-items:end;align-content:end;padding:0 var(--margin) 64px;background:var(--bg)}
+.hero-cta{display:none}
+.nav{position:absolute;top:44px;left:var(--margin);right:var(--margin);
+  display:grid;grid-template-columns:42% 1fr auto;align-items:center;gap:var(--gutter)}
+.wordmark{font-family:var(--font-display);font-weight:300;font-size:var(--t-lead);letter-spacing:0.06em;text-decoration:none}
+.nav-links{display:flex;gap:32px}
+.nav-links a,.navmenu summary{font-size:var(--t-small);text-decoration:none;border-bottom:2px solid transparent;padding-bottom:2px}
+.nav-links a:hover,.navmenu summary:hover{border-bottom-color:var(--ink)}
+.navmenu{display:none;position:relative}
+.navmenu summary{cursor:pointer;list-style:none}
+.navmenu summary::-webkit-details-marker{display:none}
+.navmenu a{display:block;font-size:var(--t-small);text-decoration:none;padding:10px 0}
+.navmenu[open]{background:var(--surface);padding:0 16px}
+.hero-line{grid-column:2;font-family:var(--font-display);font-weight:300;
+  font-size:var(--t-display);line-height:0.95;letter-spacing:-0.04em;margin:0}
+.mask{display:inline-block;overflow:hidden;vertical-align:bottom}
+.mask-i{display:block}
+.hero-sub{grid-column:1;align-self:end;max-width:32ch;font-size:var(--t-body);line-height:1.5;color:var(--muted);margin-bottom:.2em}
+
+/* ---------- 2. showcase: the same text, read at three depths ---------- */
+.showcase{background:var(--surface);padding:96px 0}
+.show-top{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:0 var(--gutter)}
+.show-h{grid-column:1/span 6;font-family:var(--font-display);font-weight:300;font-size:var(--t-head);line-height:1.06}
+.show-p{grid-column:7/span 6;font-size:var(--t-body);max-width:52ch}
+
+/* the one live thing: three presets, the same paragraph re-set */
+.demo{padding:0 var(--margin);margin-top:64px}
+.demo-bar{display:flex;justify-content:space-between;align-items:baseline;gap:24px;flex-wrap:wrap}
+.tiers{display:flex;gap:8px;flex-wrap:wrap}
+.tier{min-height:44px;padding:0 18px;border:0;border-radius:0;background:var(--bg);color:var(--muted);
+  font-size:var(--t-small);cursor:pointer;transition:background-color .18s ease,color .18s ease}
+.tier:hover{color:var(--ink)}
+.tier.is-on{background:var(--ink);color:var(--accent-ink)}
+.demo-note{font-size:var(--t-small);color:var(--muted)}
+.demo-note b{font-weight:700;font-variant-numeric:tabular-nums;color:var(--ink)}
+.rez{--s:0.55;margin-top:36px;display:grid;gap:16px;max-width:64ch}
+.seg{display:grid;grid-template-columns:minmax(0,1fr) 7ch;gap:24px;align-items:baseline}
+.seg-text{font-size:var(--t-body);line-height:1.75;color:var(--ink);
+  opacity:calc(1 - var(--s) * var(--d,0));transition:opacity .3s ease}
+.seg-tag{font-size:var(--t-small);color:var(--muted);text-align:right}
+.dim-plot{--d:0}
+.dim-mid{--d:0.10}
+.dim-weak{--d:0.28}
+.dim-fade{--d:0.58}
+.dim-zero{--d:0.82}
+.seg.dim-plot .seg-text{font-weight:700}
+
+.specimens{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:0 var(--gutter);padding:0 var(--margin);margin-top:12vh}
+.specimen{grid-column:1/span 5;min-width:0}
+.specimen+.specimen{grid-column:7/span 5}
+.spec-cap{font-size:var(--t-small);color:var(--muted);margin-top:10px}
+.spec-box{overflow:hidden;height:0.62em;font-size:var(--t-specimen)}
+.spec-glyph{display:block;font-family:var(--font-display);font-weight:300;line-height:1;color:var(--ink)}
+
+/* ---------- photographs ---------- */
+.band{margin:0}
+.band img{width:100%;height:min(62svh,680px);object-fit:cover;object-position:50% 40%;
+  transition:transform 1.4s cubic-bezier(.2,.7,.2,1)}
+.band.in img{transform:scale(1.03)}
+.band figcaption{font-size:var(--t-small);color:var(--muted);padding:14px var(--margin) 0;max-width:70ch}
+.side-photo{margin:0}
+.side-photo img{aspect-ratio:3/4;object-fit:cover;width:100%}
+.side-photo figcaption{font-size:var(--t-small);color:var(--muted);margin-top:10px}
+.manuscript{min-width:0}
+.manuscript img{aspect-ratio:3/4;object-fit:cover;width:100%;object-position:50% 22%}
+.manuscript figcaption{font-size:var(--t-small);color:var(--accent-ink);margin-top:10px}
+
+/* ---------- 3. how it works: call and response ---------- */
+.how{background:var(--bg);padding:120px 0;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));
+  gap:96px var(--gutter);padding-left:var(--margin);padding-right:var(--margin)}
+.how-photo{grid-column:1/span 3;min-width:0}
+.how-col{grid-column:4/span 9;max-width:760px;min-width:0}
+.exchanges{display:grid;gap:88px}
+.ex-sentence{font-size:var(--t-lead);font-weight:500;line-height:1.35;margin-bottom:16px}
+.call{background:var(--surface);padding:20px;display:flex;justify-content:space-between;gap:16px;align-items:baseline;flex-wrap:wrap}
+.call-file{font-size:var(--t-body)}
+.call-meta{font-size:var(--t-small);color:var(--muted)}
+.response{margin-top:22px;margin-left:56px}
+.result{margin-top:22px;width:100%;max-width:760px}
+.ui{border:0;background:var(--surface);padding:18px 20px}
+.ui-bar{display:flex;justify-content:space-between;gap:16px;font-size:var(--t-small);color:var(--muted);padding-bottom:12px}
+.ui-row{display:flex;justify-content:space-between;gap:16px;font-size:var(--t-small);padding:7px 0}
+.ui-row+.ui-row{margin-top:2px}
+.ui-num{font-variant-numeric:tabular-nums;color:var(--muted)}
+.result-text{font-size:var(--t-body);line-height:1.75;max-width:44ch;padding:22px 22px 0}
+.result-text b{font-weight:700}
+.result-text span{color:var(--muted)}
+.result-foot{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 22px;flex-wrap:wrap}
+.result-foot span{font-size:var(--t-small);color:var(--muted)}
+.tally{font-weight:700;font-variant-numeric:tabular-nums}
+
+/* ---------- 4. features: capabilities as a menu ---------- */
+.what{background:var(--ink);padding:120px var(--margin);
+  display:grid;grid-template-columns:minmax(0,1fr) 560px minmax(0,1fr);gap:40px;align-items:center}
+.sheet{background:var(--bg);padding:56px 40px 60px;min-width:0;
+  clip-path:polygon(0 10px,7% 0,14% 10px,21% 0,28% 10px,35% 0,42% 10px,49% 0,56% 10px,63% 0,70% 10px,77% 0,84% 10px,91% 0,100% 10px,
+                    100% 100%,93% calc(100% - 10px),86% 100%,79% calc(100% - 10px),72% 100%,65% calc(100% - 10px),58% 100%,
+                    51% calc(100% - 10px),44% 100%,37% calc(100% - 10px),30% 100%,23% calc(100% - 10px),16% 100%,
+                    9% calc(100% - 10px),2% 100%,0 calc(100% - 10px))}
+.sheet-h{font-family:var(--font-display);font-weight:300;font-size:var(--t-head);text-align:center;line-height:1.04}
+.groups{margin-top:40px;display:grid;gap:44px}
+.group-name{font-size:var(--t-body);font-weight:700;margin-bottom:18px}
+.items{display:grid;gap:18px}
+.item-row{display:flex;align-items:baseline;gap:.5em}
+.item-name{font-size:var(--t-body)}
+.item-val{font-size:var(--t-body);color:var(--muted);white-space:nowrap}
+.leader{flex:1;border-bottom:4px dotted var(--muted);transform:translateY(-.32em)}
+.item-desc{font-size:var(--t-small);color:var(--muted);max-width:34ch;margin-top:4px}
+
+/* ---------- 5. faq: wide heading, indented questions ---------- */
+.faq{background:var(--surface);padding:120px 0}
+.faq-in{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:0 var(--gutter);padding:0 var(--margin)}
+.faq-h{grid-column:1/span 8;font-family:var(--font-display);font-weight:300;font-size:var(--t-display);line-height:0.98;letter-spacing:-0.03em}
+.faq-list{grid-column:5/span 8;margin-top:80px}
+.q{transition:background-color .2s ease}
+.q+.q{margin-top:36px}
+.q summary{display:flex;justify-content:space-between;align-items:center;gap:24px;
+  font-size:var(--t-lead);font-weight:500;line-height:1.3;cursor:pointer;list-style:none}
+.q summary::-webkit-details-marker{display:none}
+.q[open]{background:var(--bg);padding:24px;margin-left:-24px;margin-right:-24px}
+.q-a{font-size:var(--t-body);line-height:1.65;max-width:48ch;margin-top:18px;color:var(--ink)}
+.chev{flex:0 0 auto;stroke:currentColor;stroke-width:2px;fill:none;transition:transform .3s ease}
+.q[open] .chev{transform:rotate(180deg)}
+
+/* ---------- read: just read the book you already have ---------- */
+.read{background:var(--surface);padding:120px 0}
+.read-in{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:32px var(--gutter);
+  padding:0 var(--margin);align-items:start}
+.read-h{font-family:var(--font-display);font-weight:300;font-size:var(--t-head);line-height:1.06}
+.read-p{font-size:var(--t-body);line-height:1.6;max-width:52ch}
+.read-acts{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:26px}
+.read-note{font-size:var(--t-small);color:var(--muted)}
+
+/* ---------- ai: bring your own model ---------- */
+.ai{background:var(--bg);padding:120px 0}
+.ai-in{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:56px var(--gutter);
+  padding:0 var(--margin);align-items:start}
+.ai-copy{grid-column:1/span 5;min-width:0}
+.ai-h{font-family:var(--font-display);font-weight:300;font-size:var(--t-head);line-height:1.06}
+.ai-p{font-size:var(--t-body);line-height:1.6;margin-top:24px;max-width:38ch}
+.ai-note{font-size:var(--t-small);color:var(--muted);margin-top:18px;max-width:38ch}
+.ai-panel{grid-column:7/span 6;background:var(--surface);padding:44px 40px 40px;min-width:0}
+.ai-panel-h{font-size:var(--t-body);font-weight:700}
+.ai-panel .items{margin-top:20px}
+.ai-cta{display:flex;align-items:center;gap:22px;flex-wrap:wrap;margin-top:32px}
+.ai-rules{font-size:var(--t-small);color:var(--muted);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:2px}
+.ai-rules:hover{color:var(--ink)}
+
+/* ---------- notice: honest when the local service is not up ---------- */
+.notice{position:fixed;left:var(--margin);right:var(--margin);bottom:24px;z-index:60;
+  background:var(--ink);color:var(--accent-ink);padding:18px 22px;
+  display:flex;justify-content:space-between;align-items:center;gap:24px;flex-wrap:wrap}
+.notice[hidden]{display:none}
+.notice p{font-size:var(--t-small);line-height:1.5;max-width:70ch}
+.notice b{font-weight:700}
+.notice-x{background:transparent;border:0;color:var(--accent-ink);font-size:var(--t-small);
+  cursor:pointer;padding:10px 2px;text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:2px}
+.notice-x:hover{color:var(--muted)}
+
+/* ---------- 6. cta: one word is the button ---------- */
+.band-btn{display:block;width:100%;height:60svh;position:relative;text-align:left;
+  background:var(--accent);color:var(--accent-ink);border:0;border-radius:0;cursor:pointer;
+  transition:background-color .12s ease,color .12s ease}
+.band-btn:hover,.band-btn:focus-visible{background:var(--accent-ink);color:var(--accent)}
+.band-say{position:absolute;top:20px;left:var(--margin);font-size:var(--t-body);max-width:24ch;line-height:1.45}
+.band-arrow{position:absolute;top:20px;right:var(--margin);width:48px;height:48px;stroke:currentColor;stroke-width:2px;fill:none}
+.band-word{position:absolute;left:var(--margin);bottom:.06em;font-family:var(--font-display);font-weight:300;
+  font-size:var(--t-band);line-height:0.92;letter-spacing:-0.03em;white-space:nowrap}
+
+/* ---------- 7. footer: invitation over a cropped name ---------- */
+.foot{background:var(--ink);color:var(--accent-ink);height:100svh;overflow:hidden;
+  display:flex;flex-direction:column;padding:96px var(--margin) 0}
+.foot-top{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:0 var(--gutter)}
+.invite{grid-column:1/span 7;font-family:var(--font-display);font-weight:300;
+  font-size:clamp(30px,5vw,76px);line-height:1.02;letter-spacing:-0.02em}
+.btn-invite{grid-column:1/span 7;justify-self:start;margin-top:28px;background:var(--accent-ink);color:var(--ink)}
+.btn-invite:hover{background:var(--muted);color:var(--accent-ink)}
+.foot-links{grid-column:10/span 3;display:grid;gap:12px;align-content:start}
+.foot-links a{font-size:var(--t-body);text-decoration:none;border-bottom:2px solid transparent;padding-bottom:2px;justify-self:start}
+.foot-links a:hover{border-bottom-color:var(--accent-ink)}
+.foot-legal{margin-top:auto;display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;padding-bottom:16px}
+.foot-legal p{font-size:var(--t-body);max-width:62ch}
+.foot-legal a{text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:2px}
+.foot-mark{font-family:var(--font-display);font-weight:100;font-size:var(--t-mark);line-height:0.92;
+  letter-spacing:0.02em;white-space:nowrap;margin-bottom:-0.30em}
+
+/* ---------- tablet: the menu loses its marginalia ---------- */
+@media (max-width:1023px){
+  .what{grid-template-columns:minmax(0,1fr);gap:28px}
+  .manuscript{display:none}
+  .ai{padding:88px 0}
+  .ai-in{grid-template-columns:minmax(0,1fr);gap:40px}
+  .ai-copy,.ai-panel{grid-column:1}
+  .ai-p,.ai-note{max-width:none}
+  .read{padding:88px 0}
+  .read-in{grid-template-columns:minmax(0,1fr);gap:24px}
+}
+
+/* ---------- phone: its own composition ---------- */
+@media (max-width:767px){
+  .hero{grid-template-columns:1fr;align-items:end;padding-bottom:28px}
+  .hero-line,.hero-sub,.hero-cta{grid-column:1}
+  .hero-sub{margin:0 0 24px;max-width:none}
+  .hero-cta{display:inline-flex;justify-self:start}
+  .nav{grid-template-columns:1fr auto;top:28px}
+  .nav-links{display:none}
+  .navmenu{display:block}
+  .nav .btn{display:none}
+  .show-top{grid-template-columns:1fr;gap:20px}
+  .show-h,.show-p{grid-column:1;max-width:none}
+  .demo{margin-top:44px}
+  .demo-bar{flex-direction:column;align-items:stretch;gap:16px}
+  .tiers{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+  .tier{padding:0 8px}
+  .rez{margin-top:26px;max-width:none}
+  .seg{grid-template-columns:1fr;gap:2px}
+  .seg-tag{text-align:left}
+  .specimens{grid-template-columns:1fr;gap:32px;margin-top:56px}
+  .specimen,.specimen+.specimen{grid-column:1}
+  .spec-box{font-size:62vw;height:0.62em}
+  .specimen+.specimen .spec-box{background:var(--ink)}
+  .specimen+.specimen .spec-glyph{color:var(--accent-ink)}
+  .how{grid-template-columns:1fr;gap:48px;padding:72px var(--margin)}
+  .how-photo,.how-col{grid-column:1;max-width:none}
+  .how-col{order:1}
+  .how-photo{order:2}
+  .side-photo img{aspect-ratio:4/3}
+  .exchanges{gap:48px}
+  .response{margin-left:0;margin-top:24px}
+  .what{grid-template-columns:1fr;padding:72px 12px}
+  .manuscript{display:none}
+  .sheet{padding:44px 20px 48px}
+  .faq{padding:72px 0}
+  .faq-in{grid-template-columns:1fr;gap:0}
+  .faq-h,.faq-list{grid-column:1}
+  .faq-h{font-size:var(--t-display)}
+  .faq-list{margin-top:44px}
+  .q+.q{margin-top:28px}
+  .q summary{font-size:var(--t-body)}
+  .q[open]{margin-left:calc(-1 * var(--margin));margin-right:calc(-1 * var(--margin));padding:24px var(--margin)}
+  .band-btn{height:46svh}
+  .band-arrow{width:32px;height:32px}
+  .band-say{max-width:17ch}
+  .ai{padding:72px 0}
+  .ai-panel{padding:32px 20px}
+  .ai-panel .item-val{white-space:normal;text-align:right}
+  .ai-cta{flex-direction:column;align-items:stretch}
+  .ai-cta .btn{width:100%}
+  .notice{padding:16px 18px;bottom:16px}
+  .read{padding:72px 0}
+  .read-acts{flex-direction:column;align-items:stretch}
+  .read-acts .btn{width:100%}
+  .foot{padding-top:72px}
+  .foot-top{grid-template-columns:1fr}
+  .invite,.foot-links{grid-column:1}
+  .invite{font-size:11vw}
+  .btn-invite{grid-column:1;width:100%;margin-top:24px}
+  .foot-links{margin-top:28px;display:flex;gap:20px;flex-wrap:wrap}
+  .foot-links a{font-size:var(--t-small)}
+  .foot-legal{margin-top:40px}
+  .foot-mark{font-size:34vw}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ 1. hero ============ -->
+<section class="hero" id="top">
+  <header class="nav">
+    <a class="wordmark" href="#top">深浅</a>
+    <nav class="nav-links">
+      <a href="#how">它怎么工作</a>
+      <a href="/read">阅读器</a>
+      <a href="#ai">接上 AI</a>
+      <a href="#faq">常见问题</a>
+    </nav>
+    <details class="navmenu">
+      <summary>菜单</summary>
+      <a href="#how">它怎么工作</a>
+      <a href="#what">能做什么</a>
+      <a href="/read">阅读器</a>
+      <a href="#ai">接上 AI</a>
+      <a href="#faq">常见问题</a>
+    </details>
+    <button class="btn" type="button" data-app>进入工作台</button>
+  </header>
+
+  <p class="hero-line"><span class="mask"><span class="mask-i">把重要的情节，</span></span><br><span class="mask"><span class="mask-i">读得更深。</span></span></p>
+  <p class="hero-sub">放一本中文网文 TXT 进去。它逐段读完，把情节压深、把注水退浅，深度由你调。原文一个字不改。</p>
+  <button class="btn hero-cta" type="button" data-app>进入工作台</button>
+</section>
+
+<!-- ============ 2. showcase: the same text at three depths ============ -->
+<section class="showcase" id="show">
+  <div class="wrap show-top">
+    <h2 class="show-h reveal">同一段字，读出深浅</h2>
+    <p class="show-p reveal">它不改写一个字，只做一件事：给每一段落定一个深浅。下面是一小段示例正文，点顶栏三种强度，看同一段字怎么重排。判定不合口味的段落，可以一键保留原文。</p>
+  </div>
+
+  <div class="specimens">
+    <div class="specimen reveal">
+      <div class="spec-box"><span class="spec-glyph">深</span></div>
+      <p class="spec-cap">留给情节的深度</p>
+    </div>
+    <div class="specimen reveal">
+      <div class="spec-box"><span class="spec-glyph">浅</span></div>
+      <p class="spec-cap">留给注水的深度</p>
+    </div>
+  </div>
+
+  <div class="demo reveal">
+    <div class="demo-bar">
+      <div class="tiers" role="group" aria-label="渲染强度">
+        <button class="tier" type="button" data-s="0">原汁原味</button>
+        <button class="tier is-on" type="button" data-s="0.55" aria-pressed="true">平衡</button>
+        <button class="tier" type="button" data-s="1">只看剧情</button>
+      </div>
+      <p class="demo-note">强度 <b data-s-val>0.55</b> · 这一屏 8 段：情节 2 · 普通 1 · 偏水 2 · 注水 2 · 零信息 1</p>
+    </div>
+
+    <div class="rez">
+      <div class="seg dim-plot">
+        <p class="seg-text">她把信纸从书脊里抽出来的时候，手是抖的。三年了，她第一次敢把它打开。</p>
+        <span class="seg-tag">情节</span>
+      </div>
+      <div class="seg dim-mid">
+        <p class="seg-text">窗外雨声很密，屋檐下的水线连成一片，落在青石板上溅起细碎的白点。</p>
+        <span class="seg-tag">普通</span>
+      </div>
+      <div class="seg dim-weak">
+        <p class="seg-text">屋里的家具都是旧的，桌子有一角磨得发白，椅背上搭着一条洗到发灰的毯子。</p>
+        <span class="seg-tag">偏水</span>
+      </div>
+      <div class="seg dim-fade">
+        <p class="seg-text">雨下了三天，天是灰的，路也是灰的。她这几天没怎么出门，也没怎么说话。</p>
+        <span class="seg-tag">注水</span>
+      </div>
+      <div class="seg dim-plot">
+        <p class="seg-text">信上只有一行字：只剩一个名字还是清楚的。她把这行字读了三遍，然后把书塞回原来的位置。</p>
+        <span class="seg-tag">情节</span>
+      </div>
+      <div class="seg dim-zero">
+        <p class="seg-text">（本章完，求月票。作者的话：明天两更，谢谢打赏的读者。）</p>
+        <span class="seg-tag">零信息</span>
+      </div>
+      <div class="seg dim-fade">
+        <p class="seg-text">夜色慢慢沉下来，像墨水滴进清水里，一点一点把屋子染黑。</p>
+        <span class="seg-tag">注水</span>
+      </div>
+      <div class="seg dim-weak">
+        <p class="seg-text">她想起很多年前的事。那时候她还没有这本书，也没有这封信，很多事都还没有发生。</p>
+        <span class="seg-tag">偏水</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 3. how it works ============ -->
+<section class="how" id="how">
+  <figure class="how-photo side-photo reveal">
+    <img src="assets/notes-in-various-hands-nypl-b12455533-426240.jpg" width="1920" height="2410" loading="lazy"
+      alt="一张纸页的扫描件，上面有几种不同笔迹写下的批注。">
+    <figcaption>读者在页边写字，是几百年的事。纽约公共图书馆藏，公有领域。</figcaption>
+  </figure>
+
+  <div class="how-col">
+    <h2 class="h h-section reveal">它怎么工作</h2>
+    <ol class="exchanges">
+      <li>
+        <p class="ex-sentence reveal">先拆章，再把整本书过一遍体检。</p>
+        <div class="call reveal">
+          <span class="call-file">长夜将尽.txt</span>
+          <span class="call-meta">1.2 MB · 24 章 · 11.8 万字</span>
+        </div>
+        <div class="response ui reveal" data-ui>
+          <div class="ui-bar"><span>拆章完成</span><span>24 章</span></div>
+          <div class="ui-row"><span>第一章 长夜</span><span class="ui-num">3,120 字</span></div>
+          <div class="ui-row"><span>第二章 旧信</span><span class="ui-num">4,860 字</span></div>
+          <div class="ui-row"><span>第三章 雨</span><span class="ui-num">2,940 字</span></div>
+          <div class="ui-row"><span>其余 21 章</span><span class="ui-num">106,900 字</span></div>
+        </div>
+      </li>
+      <li>
+        <p class="ex-sentence reveal">然后逐段判读，给每一段定一个深浅。</p>
+        <div class="call reveal">
+          <span class="call-file">第七章 · 正在判读</span>
+          <span class="call-meta">1,420 字</span>
+        </div>
+        <div class="response ui reveal" data-ui>
+          <div class="ui-bar"><span>本章分层</span><span>14 段</span></div>
+          <div class="ui-row"><span>情节 · 压深</span><span class="ui-num">2 段</span></div>
+          <div class="ui-row"><span>普通 · 轻压</span><span class="ui-num">5 段</span></div>
+          <div class="ui-row"><span>偏水 · 退浅</span><span class="ui-num">4 段</span></div>
+          <div class="ui-row"><span>注水 · 明显退浅</span><span class="ui-num">2 段</span></div>
+          <div class="ui-row"><span>零信息 · 重退</span><span class="ui-num">1 段</span></div>
+        </div>
+      </li>
+      <li>
+        <p class="ex-sentence reveal">最后你挑一档强度，把它带走。</p>
+        <div class="call reveal">
+          <span class="call-file">不需要你做别的</span>
+          <span class="call-meta">24 章全部判完</span>
+        </div>
+        <div class="result ui reveal" data-ui>
+          <div class="ui-bar"><span>长夜将尽</span><span>已判 <b class="tally">24</b> 章</span></div>
+          <p class="result-text"><b>信上只有一行字</b>，她把书塞回原位。<span>雨下了三天，天是灰的，路也是灰的。</span></p>
+          <div class="result-foot">
+            <span>同一份判定，三档强度：原汁原味 / 平衡 / 只看剧情。</span>
+            <button class="btn btn-sm" type="button" data-app>去工作台拿走</button>
+          </div>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============ 3b. reader: just read the book you have ============ -->
+<section class="read" id="read">
+  <div class="read-in">
+    <h2 class="read-h reveal">拿来就读</h2>
+    <div class="read-side">
+      <p class="read-p reveal">手头一本 TXT，或者一个 EPUB，直接放进去就能读：自动分好章节，字号随手调，整本书就在这一页里。不上传，不加工，不改一个字。</p>
+      <div class="read-acts reveal">
+        <button class="btn" type="button" data-read>打开阅读器</button>
+        <span class="read-note">支持 TXT · EPUB</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ photograph band ============ -->
+<figure class="band reveal">
+  <img src="assets/reading-room.jpg" width="1558" height="2048" loading="lazy"
+    alt="一间老阅览室：白色的拱廊与穹顶下，书架沿墙排满，长桌摆在中央。">
+  <figcaption>阅览室。图片：Nathaniel Watson，CC BY 3.0，来自 Wikimedia Commons。</figcaption>
+</figure>
+
+<!-- ============ 4. features ============ -->
+<section class="what" id="what">
+  <figure class="manuscript reveal">
+    <img src="assets/page-of-text-with-commentary-and-pointers.jpg" width="1920" height="2389" loading="lazy"
+      alt="一页古书的扫描件，正文两侧有批注和指向正文的小记号。">
+    <figcaption>边注：在正文旁边写下哪一句值得回头再看。<br>纽约公共图书馆藏，公有领域。</figcaption>
+  </figure>
+
+  <div class="sheet reveal">
+    <h2 class="sheet-h">能做什么</h2>
+    <div class="groups">
+      <div class="group">
+        <p class="group-name">处理</p>
+        <div class="items">
+          <div class="item">
+            <div class="item-row"><span class="item-name">输入格式</span><span class="leader"></span><span class="item-val">TXT</span></div>
+            <p class="item-desc">TXT 直接读。EPUB / PDF 要先抽出文本，这层还在做。</p>
+          </div>
+          <div class="item">
+            <div class="item-row"><span class="item-name">输出格式</span><span class="leader"></span><span class="item-val">EPUB ／ PDF ／ HTML</span></div>
+            <p class="item-desc">EPUB 和 PDF 交给你的阅读器；网页版双击就能看。</p>
+          </div>
+          <div class="item">
+            <div class="item-row"><span class="item-name">分层</span><span class="leader"></span><span class="item-val">五层</span></div>
+            <p class="item-desc">情节 / 普通 / 偏水 / 注水 / 零信息，每一段都写明判定依据。</p>
+          </div>
+          <div class="item">
+            <div class="item-row"><span class="item-name">原文</span><span class="leader"></span><span class="item-val">一个字不改</span></div>
+            <p class="item-desc">它只决定深浅，不增删、不润色、不换词。</p>
+          </div>
+        </div>
+      </div>
+      <div class="group">
+        <p class="group-name">顺手的</p>
+        <div class="items">
+          <div class="item">
+            <div class="item-row"><span class="item-name">强度</span><span class="leader"></span><span class="item-val">三档 + 自定义</span></div>
+            <p class="item-desc">原汁原味 / 平衡 / 只看剧情。不用重跑，调完就出。</p>
+          </div>
+          <div class="item">
+            <div class="item-row"><span class="item-name">判定可见</span><span class="leader"></span><span class="item-val">每段都标</span></div>
+            <p class="item-desc">鼠标停在段落上，能看到它为什么被这么判；不顺眼的段落一键保留原文。</p>
+          </div>
+          <div class="item">
+            <div class="item-row"><span class="item-name">AI 复核</span><span class="leader"></span><span class="item-val">可选 · 自带 Key</span></div>
+            <p class="item-desc">只在拿不准的段落上叫你的模型复核一遍，Key 用完即走，不落盘。</p>
+          </div>
+        </div>
+      </div>
+      <div class="group">
+        <p class="group-name">不做的</p>
+        <div class="items">
+          <div class="item">
+            <div class="item-row"><span class="item-name">改写原文</span><span class="leader"></span><span class="item-val">不做</span></div>
+            <p class="item-desc">校对、润色、分段都不做。你交出什么文，拿回什么文。</p>
+          </div>
+          <div class="item">
+            <div class="item-row"><span class="item-name">上传你的书</span><span class="leader"></span><span class="item-val">不做</span></div>
+            <p class="item-desc">全程在你自己的机器上跑，我们不收你的小说。</p>
+          </div>
+          <div class="item">
+            <div class="item-row"><span class="item-name">替你定口味</span><span class="leader"></span><span class="item-val">不做</span></div>
+            <p class="item-desc">默认平衡，恋战的题材自己调。判定权始终在你手里。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <figure class="manuscript reveal">
+    <img src="assets/title-page-of-the-gospel-of-john.jpg" width="1856" height="2472" loading="lazy"
+      alt="一份手抄本的开篇页，文字用细笔写成，边缘有装饰。">
+    <figcaption>手抄本时代，重要的话会被看得更清楚。<br>《约翰福音》开篇页，1300 至 1310 年，The Met，公有领域。</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 5b. ai: bring your own model, into the workbench ============ -->
+<section class="ai" id="ai">
+  <div class="ai-in">
+    <div class="ai-copy">
+      <h2 class="ai-h reveal">接上你自己的 AI</h2>
+      <p class="ai-p reveal">引擎本体不联网，纯规则就能跑完一本。你想更准一点，就进工作台，填上自己的接口地址、模型名和 Key——它只把规则拿不准的那一段（大约三成到七成）复核一遍，按 skill 的判定标准打分。</p>
+      <p class="ai-note reveal">用哪家由你定。Key 只在这次请求里用，不写进文件、不进日志，刷新页面就没了。</p>
+    </div>
+
+    <div class="ai-panel reveal">
+      <p class="ai-panel-h">这些家一键填好，也支持任何兼容接口</p>
+      <div class="items">
+        <div class="item"><div class="item-row"><span class="item-name">DeepSeek</span><span class="leader"></span><span class="item-val">deepseek-chat</span></div></div>
+        <div class="item"><div class="item-row"><span class="item-name">Kimi（月之暗面）</span><span class="leader"></span><span class="item-val">moonshot-v1-8k</span></div></div>
+        <div class="item"><div class="item-row"><span class="item-name">通义千问</span><span class="leader"></span><span class="item-val">qwen-plus</span></div></div>
+        <div class="item"><div class="item-row"><span class="item-name">智谱 GLM</span><span class="leader"></span><span class="item-val">glm-4-flash</span></div></div>
+        <div class="item"><div class="item-row"><span class="item-name">OpenAI</span><span class="leader"></span><span class="item-val">gpt-4o-mini</span></div></div>
+        <div class="item"><div class="item-row"><span class="item-name">其他</span><span class="leader"></span><span class="item-val">兼容接口即可</span></div></div>
+      </div>
+      <div class="ai-cta">
+        <button class="btn" type="button" data-app>进工作台，接上你的 AI</button>
+        <a class="ai-rules" href="/api/skill-rules" target="_blank" rel="noopener">它用的判定标准，打开看一眼</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 5. faq ============ -->
+<section class="faq" id="faq">
+  <div class="faq-in">
+    <h2 class="faq-h reveal">你可能想问的</h2>
+    <div class="faq-list">
+      <details class="q reveal">
+        <summary>我的 TXT 能直接处理吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
+        <p class="q-a">能。TXT 直接读进来。EPUB 和 PDF 要先抽成文本再处理，这一层还在做，做好了会同步上线。</p>
+      </details>
+      <details class="q reveal">
+        <summary>它会改写我的小说吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
+        <p class="q-a">不会。它只给每一段落定一个深浅，渲染时改的是字的重和浓，句子本身一个都不动。你拿回的文件，正文和原文逐字一致。</p>
+      </details>
+      <details class="q reveal">
+        <summary>判定准不准？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
+        <p class="q-a">它按一套写死的规则判，不是凭感觉猜：零信息的求票、作者话、水印直接判死；写景、复述、对话这类由你决定要不要退浅；情节永远保护。每段都标着判定依据，鼠标停上去就能看到，不服的段落一键保留原文。</p>
+      </details>
+      <details class="q reveal">
+        <summary>一定要接 AI 吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
+        <p class="q-a">不一定要。纯规则也能跑完出一本书。接 AI 是在规则拿不准的那一段（大概三成到七成的模糊带）叫你的模型复核一遍，结果按原来的格式写回去。可以随时关掉，用纯规则。</p>
+      </details>
+      <details class="q reveal">
+        <summary>我要填自己的 API Key 吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
+        <p class="q-a">填你自己的。用哪家由你决定。Key 只在这次请求里用，不写进文件、不存下来。关掉 AI 复核的开关就不会用上它。</p>
+      </details>
+      <details class="q reveal">
+        <summary>文件会被存下来吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
+        <p class="q-a">拆章、判读、打包都在你自己的机器上做完，我们不收你的书，也不看里面写了什么。只有你开了 AI 复核，那几段拿不准的文字才会发给你自己选的模型服务商。</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ photograph band ============ -->
+<figure class="band reveal">
+  <img src="assets/historical-printing-room-at-the-cambridge-university.png" width="1920" height="2916" loading="lazy"
+    alt="一间活字印刷工坊：铸排机、铅字盘和木制印刷机摆在一起。">
+  <figcaption>活字印刷室。图片：ZoneAlarm5，CC BY-SA 4.0，来自 Wikimedia Commons。</figcaption>
+</figure>
+
+<!-- ============ 6. cta ============ -->
+<section class="cta" id="cta">
+  <button class="band-btn" type="button" data-app>
+    <span class="band-say">TXT 放进去，EPUB 和 PDF 拿出来。原文一个字不改。</span>
+    <svg class="band-arrow" viewBox="0 0 48 48" aria-hidden="true"><path d="M14 34L34 14M34 14H18M34 14v16"/></svg>
+    <span class="band-word">深浅</span>
+  </button>
+</section>
+
+<!-- ============ 7. footer ============ -->
+<footer class="foot">
+  <div class="foot-top">
+    <p class="invite reveal">读不完的书，<br>先读要紧的。</p>
+    <div class="foot-links reveal">
+      <a href="mailto:hi@qian.shen?subject=%E6%88%91%E6%83%B3%E8%AF%95%E8%AF%95%E6%B7%B1%E6%B5%85">写信给我们</a>
+      <a href="#how">它怎么工作</a>
+      <a href="/read">阅读器</a>
+      <a href="#what">能做什么</a>
+      <a href="#faq">常见问题</a>
+    </div>
+    <button class="btn btn-invite reveal" type="button" data-app>进入工作台</button>
+  </div>
+  <div class="foot-legal">
+    <p>图片：<a href="https://commons.wikimedia.org/wiki/File:Reading_Room_(241477141).jpeg">Reading Room</a>／Nathaniel Watson，CC BY 3.0；<a href="https://commons.wikimedia.org/wiki/File:Historical_Printing_Room_at_the_Cambridge_University_Library.png">Historical Printing Room</a>／ZoneAlarm5，CC BY-SA 4.0；<a href="https://commons.wikimedia.org/wiki/File:Notes_in_various_hands_(NYPL_b12455533-426240).tif">NYPL b12455533-426240</a> 与 <a href="https://commons.wikimedia.org/wiki/File:Page_of_text_with_commentary_and_pointers_in_margins_(NYPL_b12455533-423678).tif">NYPL b12455533-423678</a>，公有领域；<a href="https://www.metmuseum.org/art/collection/search/449536">Title Page of the Gospel of John</a>，The Met，公有领域。均来自 Wikimedia Commons 或 The Met。</p>
+    <p>深浅 · 2026</p>
+  </div>
+  <div class="foot-mark" aria-hidden="true">深浅</div>
+</footer>
+
+<div class="notice" id="notice" role="status" hidden>
+  <p>本地服务还没起。<b>双击项目里的「启动.bat」</b>，或者运行 <b>python app/server.py</b>，再从 http://127.0.0.1:8765 打开这个页面就行。</p>
+  <button class="notice-x" type="button" id="noticeX">知道了</button>
+</div>
+
+<script>
+(function () {
+  // 入口按钮：data-app 通向工作台，data-read 通向阅读器；页面不是由本地服务打开时，明说清楚怎么起服务
+  var served = /^https?:$/.test(window.location.protocol);
+  var notice = document.getElementById('notice');
+  function go(target) {
+    return function () {
+      if (served) { window.location.href = target; return; }
+      if (notice) notice.hidden = false;
+    };
+  }
+  document.querySelectorAll('[data-app]').forEach(function (b) { b.addEventListener('click', go('/app')); });
+  document.querySelectorAll('[data-read]').forEach(function (b) { b.addEventListener('click', go('/read')); });
+  var nx = document.getElementById('noticeX');
+  if (nx) nx.addEventListener('click', function () { if (notice) notice.hidden = true; });
+
+  // the live thing: three presets of depth, the same paragraph re-set
+  var rez = document.querySelector('.rez');
+  var tiers = [].slice.call(document.querySelectorAll('.tier'));
+  var sVal = document.querySelector('[data-s-val]');
+  tiers.forEach(function (b) {
+    b.addEventListener('click', function () {
+      var s = b.getAttribute('data-s');
+      if (rez) rez.style.setProperty('--s', s);
+      if (sVal) sVal.textContent = s;
+      tiers.forEach(function (x) {
+        x.classList.toggle('is-on', x === b);
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+    });
+  });
+
+  function ready() {
+    requestAnimationFrame(function () { document.body.classList.add('loaded'); });
+
+    var items = [].slice.call(document.querySelectorAll('.reveal'));
+    var groups = new Map();
+    items.forEach(function (el) {
+      var k = el.parentElement, n = groups.get(k) || 0;
+      el.style.transitionDelay = Math.min(n, 5) * 70 + 'ms';
+      groups.set(k, n + 1);
+    });
+
+    if (!('IntersectionObserver' in window)) {
+      items.forEach(function (el) { el.classList.add('in'); });
+      return;
+    }
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+      });
+    }, { rootMargin: '0px 0px -6% 0px', threshold: 0.08 });
+    items.forEach(function (el) { io.observe(el); });
+
+    // nothing stays hidden if the observer never fires
+    setTimeout(function () { items.forEach(function (el) { el.classList.add('in'); }); }, 9000);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready);
+  else ready();
+})();
+</script>
+</body>
+</html>
