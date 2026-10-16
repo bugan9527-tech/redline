@@ -1,6 +1,7 @@
 package com.qianshen.app
 
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -99,6 +100,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         aiConfig = loadAiConfig()
+        // 回归入口：只有 debug 包、且 Intent 带了 regress 参数才走这条 headless 判定，
+        // 不弹确认页、不等用户点任何东西。android/tools/regress.py 靠它跟桌面逐段对照。
+        maybeRegress(intent)
         setContent {
             MaterialTheme {
                 Surface(
@@ -140,6 +144,75 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    // 壳已经在跑时再 am start 一次不会走 onCreate，regress 参数会走 onNewIntent —— 补上。
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeRegress(intent)
+    }
+
+    // ---------- 回归：headless 判定入口（只有 debug 包会走） ----------
+
+    /** 认 regress 参数并起后台判定；发布包（非 debuggable）里这个参数一律不认。 */
+    private fun maybeRegress(intent: Intent?) {
+        if (!isDebuggable()) return
+        intent?.getStringExtra(EXTRA_REGRESS)?.let { startRegression(it) }
+    }
+
+    /**
+     * `adb shell am start -n com.qianshen.app/.MainActivity --es regress <设备上 txt 路径>`
+     * 触发的后台判定：跳过抽查确认，直接在 out/ 落 parsed.json / analyzed.json，跑完写
+     * out/regress_done.json 供脚本轮询，界面停在阅读页。判定本身仍是引擎那一份，
+     * 这里一条网都不连——它只负责把引擎跑起来，好让桌面侧逐段比对。
+     */
+    private fun startRegression(devicePath: String) {
+        val src = File(devicePath)
+        val dir = bookDir()
+        val out = File(dir, "out")
+        goTo(Stage.Working("回归：判定整本…", emptyList()))
+        Thread {
+            try {
+                require(src.isFile) { "设备上找不到试验书：$devicePath" }
+                dir.mkdirs()
+                out.mkdirs()
+                File(dir, "name.txt").writeText(src.name)
+                val runner = Python.getInstance().getModule("runner")
+                val bridge = ProgressBridge { appendLog(it) }
+                val doc = asStringMap(
+                    runner.callAttr(
+                        "build", src.absolutePath, out.absolutePath,
+                        null, 1, false, "auto", true, bridge,
+                    ),
+                )
+                writeRegressDone(src, out, doc)
+                val reader = listOf(File(out, "index.html"), File(out, "book.html"))
+                    .firstOrNull { it.isFile }
+                requireNotNull(reader) { "阅读版没生成" }
+                goTo(Stage.Reading(reader, "回归 · ${src.name}"))
+            } catch (e: Throwable) {
+                fail("回归失败", e)
+            }
+        }.start()
+    }
+
+    /** 摘要落盘：脚本轮询这个文件判断设备侧跑完没有，所以它是「跑完」的唯一信号。 */
+    private fun writeRegressDone(src: File, out: File, doc: Map<String, PyObject>) {
+        val tiers = doc["tiers"]?.let { asStringMap(it) }?.mapValues { it.value.toString() }
+            ?: emptyMap()
+        val o = JSONObject()
+            .put("source", src.name)
+            .put("chapters", doc["chapters"]?.toString()?.toIntOrNull() ?: 0)
+            .put("chars", doc["chars"]?.toString()?.toIntOrNull() ?: 0)
+            .put("names", doc["names"]?.toString()?.toIntOrNull() ?: 0)
+            .put("tiers", JSONObject(tiers))
+            .put("target", doc["target"]?.toString().orEmpty())
+        File(out, "regress_done.json").writeText(o.toString())
+    }
+
+    /** debug 构建才认这个入口：发布包里 Intent 带了 regress 也不动。 */
+    private fun isDebuggable(): Boolean =
+        (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     // ---------- 选书：内容 URI -> 私有目录的副本 ----------
 
@@ -470,6 +543,9 @@ class MainActivity : ComponentActivity() {
         const val AI_HI = 0.70
         const val AI_MAX = 400
         const val AI_BATCH = 16
+
+        // 回归入口的 Intent extra 名：见 startRegression / android/tools/regress.py。
+        const val EXTRA_REGRESS = "regress"
     }
 }
 
