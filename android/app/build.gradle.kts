@@ -56,8 +56,18 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
-    // 探针：Compose 编译器插件会校验 Compose 运行时版本，缺了会直接崩 kotlinc。
+    // 版本全部与本地 gradle 缓存对齐：ui/foundation/runtime 同属 1.10.4 一档，
+    // material3 只有 1.4.0，activity-compose 只有 1.8.2。混版本要靠缓存里现成的那些，
+    // 所以 material-ripple / animation 这些被 material3 以低版本声明、缓存里只有 1.10.4 的，
+    // 显式提到 1.10.4，免得 Gradle 去解析一个没缓存、又没网可拉的版本。
+    implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.compose.runtime:runtime:1.10.4")
+    implementation("androidx.compose.ui:ui:1.10.4")
+    implementation("androidx.compose.ui:ui-graphics:1.10.4")
+    implementation("androidx.compose.foundation:foundation:1.10.4")
+    implementation("androidx.compose.animation:animation:1.10.4")
+    implementation("androidx.compose.material:material-ripple:1.10.4")
+    implementation("androidx.compose.material3:material3:1.4.0")
 }
 
 // 引擎 requirement 的自带原生库（libomp / libopenblas / libc++_shared）不归 Chaquopy 管：

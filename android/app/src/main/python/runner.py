@@ -56,29 +56,53 @@ def prescan(src, out_dir) -> dict:
     return doc
 
 
+def _emit(progress, msg: str) -> None:
+    """把进度推给壳侧。Android 传进来的是个 Java 对象，调它的 onStep(text)。
+
+    这纯粹是给界面看的，失败绝不能拖累流水线——所以吞掉一切异常。
+    """
+    if progress is None:
+        return
+    try:
+        progress.onStep(msg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def build(src, out_dir, limit=None, start_at=1, marks=False, mode="auto",
-          want_report=True) -> dict:
-    """parse -> detect -> report -> render。返回摘要：章数 / 字数 / 分层 / 产物路径。"""
+          want_report=True, progress=None) -> dict:
+    """parse -> detect -> report -> render。返回摘要：章数 / 字数 / 分层 / 产物路径。
+
+    progress 是可选的回调对象，每跨过一段就回调一次——大书里 detect 那一段要跑很久，
+    界面上不给点动静用户会以为死机。
+    """
     src, out_dir = Path(src), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     log: list[str] = []
 
+    _emit(progress, "解析正文…")
     t0 = time.perf_counter()
     doc = parse_mod.parse_file(src, limit=limit, start_at=start_at)
     chars = sum(len(p["text"]) for ch in doc["chapters"] for p in ch["paragraphs"])
     _write_json(out_dir / "parsed.json", doc)
     log.append(f"[1/4] parse   {len(doc['chapters'])} 章 / {chars:,} 字  ({time.perf_counter() - t0:.1f}s)")
+    _emit(progress, f"[1/4] 解析完成：{len(doc['chapters'])} 章 / {chars:,} 字")
 
+    _emit(progress, "判定分层…")
     t0 = time.perf_counter()
     doc = detect_rules.analyze(doc)
     _write_json(out_dir / "analyzed.json", doc)
     log.append(f"[2/4] detect 人名候选 {len(doc['names'])}  ({time.perf_counter() - t0:.1f}s)")
+    _emit(progress, f"[2/4] 判定完成：{len(doc['chapters'])} 章 / 人名候选 {len(doc['names'])}")
 
+    _emit(progress, "生成逐段对照表…")
     t0 = time.perf_counter()
     if want_report:
         (out_dir / "report.txt").write_text(report_mod.render_report(doc), encoding="utf-8")
     log.append(f"[3/4] report ({time.perf_counter() - t0:.1f}s)")
+    _emit(progress, "[3/4] 对照表完成")
 
+    _emit(progress, "渲染阅读版…")
     t0 = time.perf_counter()
     real = mode if mode != "auto" else (
         "split" if chars > render_mod.SPLIT_AT_CHARS else "single"
@@ -86,6 +110,7 @@ def build(src, out_dir, limit=None, start_at=1, marks=False, mode="auto",
     target = out_dir if real == "split" else out_dir / "book.html"
     detail = render_mod.render_doc(doc, target, mode=real, marks=marks)
     log.append(f"[4/4] render {detail}  ({time.perf_counter() - t0:.1f}s)")
+    _emit(progress, f"[4/4] 渲染完成：{len(doc['chapters'])} 章")
 
     return {
         "chapters": len(doc["chapters"]),
