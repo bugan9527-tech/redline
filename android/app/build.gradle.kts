@@ -1,6 +1,16 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("com.chaquo.python")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -26,6 +36,10 @@ android {
         }
     }
 
+    buildFeatures {
+        compose = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -42,6 +56,55 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
+    // 探针：Compose 编译器插件会校验 Compose 运行时版本，缺了会直接崩 kotlinc。
+    implementation("androidx.compose.runtime:runtime:1.10.4")
+}
+
+// 引擎 requirement 的自带原生库（libomp / libopenblas / libc++_shared）不归 Chaquopy 管：
+// generate<Variant>PythonJniLibs 只往 lib/<abi>/ 放 Python 运行时本身（libpython3.10.so 等），
+// pip 产物里那几个 .so 得由壳侧自己搬。漏一个的后果不是报错而是静默降级——
+// sklearn 载入 libomp.so 失败后 detect_rules 照跑，但 fade 层整层消失，与桌面版判定对不上。
+//
+// 所以构建时直接从 pip 产物同步到生成的 jniLibs 目录，仓库里不再手放二进制。
+abstract class SyncPyNativeLibs : DefaultTask() {
+
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val pipDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun sync() {
+        val out = outputDir.get().asFile
+        out.deleteRecursively()
+        // pip 产物按 ABI 分层：<variant>/<abi>/chaquopy/lib/*.so。
+        // 这里摊平成 jniLibs 认的 <abi>/<name>.so。
+        pipDir.get().asFile.listFiles { f: File -> f.isDirectory }.orEmpty().forEach { abiDir ->
+            val libs = abiDir.resolve("chaquopy").resolve("lib")
+            if (!libs.isDirectory) return@forEach
+            val dest = out.resolve(abiDir.name).apply { mkdirs() }
+            libs.listFiles { f: File -> f.isFile && f.name.endsWith(".so") }.orEmpty().forEach {
+                it.copyTo(dest.resolve(it.name), overwrite = true)
+            }
+        }
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        val cap = variant.name.replaceFirstChar { it.uppercase() }
+        val syncLibs = tasks.register<SyncPyNativeLibs>("sync${cap}PyNativeLibs") {
+            pipDir.set(layout.buildDirectory.dir("python/pip/${variant.name}"))
+            outputDir.set(layout.buildDirectory.dir("generated/pyNativeLibs/${variant.name}"))
+            // pip 产物得先落盘；显式挂上，不指望 @InputDirectory 的推断。
+            dependsOn(tasks.named("install${cap}PythonRequirements"))
+        }
+        // 用 addGeneratedSourceDirectory 而不是写死 srcDir，让 AGP 自己把
+        // 「合并 native 库」这一步排在这个任务之后。
+        variant.sources.jniLibs?.addGeneratedSourceDirectory(syncLibs) { it.outputDir }
+    }
 }
 
 chaquopy {

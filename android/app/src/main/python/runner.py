@@ -1,11 +1,11 @@
 """B 方案在 Android 上的进程内入口。
 
-桌面版 app/engine.py 只通过 subprocess 调 run.py / render.py；
+桌面版 app/engine.py 只通过 subprocess 调 run.py / render.py / pack_epub.py；
 Android 没有 subprocess，所以这里把同一批只读模块 import 进来，
-参数顺序与 run.py 的 build_pipeline() / cmd_export() 完全一致——
+参数顺序与 run.py 的 doctor / build / export 完全一致——
 判定规则永远只有引擎那一份，Android 侧不存在第二套。
 
-产物一律写 os.environ["HOME"] 下：Android 的当前目录是只读的。
+产物一律写进调用方给的 out_dir：Android 的当前目录是只读的，不能相对落盘。
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import json
 import os
 import sys
 import time
-import traceback
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -31,12 +30,7 @@ import render as render_mod  # noqa: E402
 import report as report_mod  # noqa: E402
 from tiers import tier_of  # noqa: E402
 
-TIER_ORDER = ("plot", "mid", "weak", "fade", "zero", "sep")
 PRESET_STRENGTH = {"original": 0.0, "balance": 0.55, "plotonly": 1.0}
-
-
-def home() -> Path:
-    return Path(os.environ["HOME"])
 
 
 def tally_of(doc: dict) -> dict[str, int]:
@@ -46,23 +40,6 @@ def tally_of(doc: dict) -> dict[str, int]:
             k = tier_of(p["kind"], p["score"])
             t[k] = t.get(k, 0) + 1
     return t
-
-
-def rows_of(doc: dict) -> list[dict]:
-    """扁平化的逐段分层表，用来跟桌面版做逐段 diff。"""
-    rows: list[dict] = []
-    for ch in doc["chapters"]:
-        for p in ch["paragraphs"]:
-            rows.append({
-                "pid": p["pid"],
-                "ch": ch["index"],
-                "kind": p["kind"],
-                "score": round(p["score"], 4),
-                "tier": tier_of(p["kind"], p["score"]),
-                "repeat": "repeat" in p["flags"],
-                "text": p["text"][:18],
-            })
-    return rows
 
 
 def _write_json(path: Path, doc: dict) -> None:
@@ -81,7 +58,7 @@ def prescan(src, out_dir) -> dict:
 
 def build(src, out_dir, limit=None, start_at=1, marks=False, mode="auto",
           want_report=True) -> dict:
-    """parse -> detect -> report -> render。返回一句话摘要 + 分层 + 逐段表。"""
+    """parse -> detect -> report -> render。返回摘要：章数 / 字数 / 分层 / 产物路径。"""
     src, out_dir = Path(src), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     log: list[str] = []
@@ -116,7 +93,6 @@ def build(src, out_dir, limit=None, start_at=1, marks=False, mode="auto",
         "names": len(doc["names"]),
         "tiers": tally_of(doc),
         "target": str(target),
-        "rows": rows_of(doc),
         "log": log,
     }
 
@@ -136,9 +112,8 @@ def doctor(src, out_dir, chapters=3, start_at=1) -> dict:
     """体检 + 前几章抽查页（引擎强制的确认步骤，整本 build 之前必须先过）。"""
     src, out_dir = Path(src), Path(out_dir)
     scan = prescan(src, out_dir)
-    confirm = out_dir / "confirm"
-    res = build(src, confirm, limit=chapters, start_at=start_at, marks=True,
-                mode="single", want_report=True)
+    res = build(src, out_dir / "confirm", limit=chapters, start_at=start_at,
+                marks=True, mode="single", want_report=True)
     res["verdict"] = scan["verdict"]
     return res
 
@@ -154,7 +129,6 @@ def probe() -> dict:
         info["jinja2"] = f"FAIL {exc}"
     try:
         import sklearn
-        from sklearn.feature_extraction.text import TfidfVectorizer
         info["sklearn"] = getattr(sklearn, "__version__", "?")
     except Exception as exc:  # noqa: BLE001
         info["sklearn"] = f"FAIL {exc}"
@@ -164,32 +138,3 @@ def probe() -> dict:
     except Exception as exc:  # noqa: BLE001
         info["template"] = f"FAIL {exc}"
     return info
-
-
-def smoke(book_path, out_dir) -> dict:
-    """spike 用：跑一次完整流水线，把摘要 + 逐段表落盘。"""
-    out = Path(out_dir)
-    res = {
-        "probe": probe(),
-        "doctor": None,
-        "build": None,
-        "epub": None,
-        "error": None,
-    }
-    try:
-        res["doctor"] = {k: v for k, v in doctor(book_path, out / "confirm").items()
-                         if k != "rows"}
-        res["build"] = build(book_path, out)
-        res["epub"] = export_epub(out, out / "book.epub")
-    except Exception:  # noqa: BLE001
-        res["error"] = traceback.format_exc()
-    body = dict(res)
-    if res["build"]:
-        body["rows"] = res["build"].pop("rows")
-    _write_json(out / "spike_result.json", body)
-    rows = body.get("rows")
-    if rows is not None:
-        _write_json(out / "android_rows.json", {"rows": rows})
-    return {"ok": res["error"] is None, "error": res["error"],
-            "tiers": (res["build"] or {}).get("tiers"),
-            "result": str(out / "spike_result.json")}
