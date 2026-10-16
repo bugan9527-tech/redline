@@ -269,6 +269,75 @@ class TestJobDeleteContract(ApiCase):
         self.assertTrue(d.exists())
 
 
+# ---------- 取消 ----------
+
+class TestCancelContract(ApiCase):
+    """大书一次要跑一小时，Android 端也要能叫停，所以这条接口同样是契约。"""
+
+    def test_missing_job_404(self):
+        code, data = self.http_json("POST", "/api/cancel", {"job": "no-such-job"})
+        self.assertEqual(code, 404)
+        self.assertIn("error", data)
+
+    def test_idle_job_409(self):
+        d = self.make_job("闲着的书")
+        code, data = self.http_json("POST", "/api/cancel", {"job": d.name})
+        self.assertEqual(code, 409)
+        self.assertIn("error", data)
+
+    def test_cancels_running_job(self):
+        d = self.make_job("在跑的书")
+        S.set_state(d.name, phase="build")
+        code, data = self.http_json("POST", "/api/cancel", {"job": d.name})
+        self.assertEqual(code, 200)
+        self.assertEqual(data["phase"], "cancelled")
+
+        st = self.state(d.name)
+        self.assertEqual(st["phase"], "cancelled")
+        self.assertIs(st["done"], True)
+        self.assertTrue(st["error"], "取消要留下说明，不能是空")
+
+    def test_can_rerun_after_cancel(self):
+        """取消过的任务还能重新跑，不会被「已经取消」卡住。"""
+        d = self.make_job("要重跑的书")
+        S.set_state(d.name, phase="render")
+        self.assertEqual(self.http_json("POST", "/api/cancel", {"job": d.name})[0], 200)
+        # 再点一次"出整本"：接口必须接住，说明"已取消"没把它挡在门外
+        code, _ = self.http_json("POST", "/api/build", {"job": d.name, "ai": {"on": False}})
+        self.assertEqual(code, 200)
+        # 这本书没有源文件，后台线程会很快失败。等它收尾，别让它和临时目录的清理打架。
+        self.wait_until(d.name, lambda s: s.get("phase") in ("ready", "error"), "重跑收尾", 60)
+
+
+# ---------- 状态持久化 ----------
+
+class TestStatePersistence(ApiCase):
+    """内存里的 STATE 一重启就没了。失败原因恰恰是最该留下的那个。"""
+
+    def test_failure_reason_survives_restart(self):
+        d = self.make_job("炸了的书")
+        S.set_state(d.name, phase="error", done=True, error="引擎挂了：第 42 章解析失败")
+        S.STATE.clear()                     # 模拟服务重启
+        st = self.state(d.name)
+        self.assertEqual(st["phase"], "error")
+        self.assertEqual(st["error"], "引擎挂了：第 42 章解析失败")
+
+    def test_interrupted_run_is_reported(self):
+        d = self.make_job("跑到一半的书")
+        S.set_state(d.name, phase="build")
+        S.STATE.clear()
+        st = self.state(d.name)
+        # 重启那一刻它还在跑，那它其实已经被掐断了：不能装成"还在跑"
+        self.assertNotIn(st["phase"], ("build", "ai", "render", "export"))
+        self.assertIn("重启", st["error"])
+
+    def test_log_survives_restart(self):
+        d = self.make_job("有日志的书")
+        S.log_line(d.name, "[error] 这里说清楚为什么炸")
+        S.STATE.clear()
+        self.assertIn("[error] 这里说清楚为什么炸", self.state(d.name)["log"])
+
+
 # ---------- 完整链路（要跑引擎，默认跳过） ----------
 
 @unittest.skipUnless(os.environ.get("WNF_SLOW") == "1",
@@ -307,6 +376,26 @@ class TestFullChain(ApiCase):
         code, data = self.http_json("POST", "/api/job-delete", {"job": job})
         self.assertEqual(code, 200)
         self.assertNotIn(job, [it["job"] for it in data["jobs"]])
+
+    def test_cancel_stops_a_real_run(self):
+        """真的跑着引擎的时候叫停：进程要真的退掉，阶段要停在已取消。"""
+        code, up = self.upload(sample_txt(40), "叫停测试.txt")
+        self.assertEqual(code, 200, up)
+        job = up["job"]
+
+        self.http_json("POST", "/api/build", {"job": job, "ai": {"on": False}})
+        code, _ = self.http_json("POST", "/api/cancel", {"job": job})
+        self.assertEqual(code, 200, "任务刚起跑就叫停，不该被拒")
+
+        st = self.wait_until(job, lambda s: s.get("phase") in ("cancelled", "ready", "error"),
+                             "任务停下来", 120)
+        self.assertEqual(st["phase"], "cancelled", st.get("error"))
+
+        # 等等子进程真的退干净，别让它和临时目录的清理打架
+        deadline = time.time() + 60
+        while E.PROCS and time.time() < deadline:
+            time.sleep(0.2)
+        self.assertFalse(E.PROCS, "取消之后引擎子进程没退干净")
 
 
 if __name__ == "__main__":

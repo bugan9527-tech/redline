@@ -41,6 +41,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   border:0;background:var(--ink);color:var(--accent-ink);cursor:pointer;font-size:17px}
 .btn:hover{background:var(--muted)}
 .btn[disabled]{opacity:.42;cursor:not-allowed}
+.btn[hidden]{display:none}
 .btn-sm{min-height:40px;padding:0 16px;font-size:15px}
 .btn-quiet{background:var(--bg);color:var(--ink)}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:20px}
@@ -152,6 +153,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
       <p class="note">逐段判读是本地跑的，不会上传你的书。只有 AI 复核开着时，那几段拿不准的文字才会发给你自己选的接口。</p>
       <div class="row">
         <button class="btn" id="build" type="button" disabled>生成阅读版</button>
+        <button class="btn btn-sm btn-quiet" id="cancel" type="button" hidden>取消</button>
         <span class="status" id="phase">待命中</span>
       </div>
       <div class="pbar" id="pbar" hidden><i id="pbarFill"></i></div>
@@ -311,6 +313,23 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   $('goBuild').addEventListener('click', function () { build(); });
   $('build').addEventListener('click', function () { build(); });
 
+  // ---------- 取消 ----------
+  $('cancel').addEventListener('click', function () {
+    if (!job) return;
+    if (!confirm('取消这次任务？已经跑完的部分会留在 work/ 里，可以重新跑一遍。')) return;
+    $('cancel').disabled = true;
+    fetch('/api/cancel', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ job: job }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) { $('log').textContent = j.error; return; }
+        exporting = false;
+        $('log').textContent = '已取消。想重来就点「生成阅读版」。';
+      })
+      .catch(function () { $('log').textContent = NET_TIP; })
+      .then(function () { $('cancel').disabled = false; });
+  });
+
   // ---------- 导出 EPUB ----------
   function expo() {
     if (!job) return;
@@ -337,7 +356,8 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   // ---------- 轮询 ----------
   var BUSY = ['build', 'ai', 'render', 'export'];
   var LABEL = { idle: '待命中', doctor: '正在体检', checked: '等你确认抽查页', build: '正在判读整本',
-                ai: '正在做 AI 复核', render: '正在重渲', export: '正在打包', ready: '好了', error: '出错' };
+                ai: '正在做 AI 复核', render: '正在重渲', export: '正在打包', ready: '好了',
+                error: '出错', cancelled: '已取消' };
 
   function elapsed(s) {
     var t0 = (s && s.started) || beganAt;
@@ -397,6 +417,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
         var busy = BUSY.indexOf(s.phase) >= 0;
         $('build').disabled = busy || !job;
         $('epub').disabled = busy || !job;
+        $('cancel').hidden = !busy;
         paintProgress(s);
         // 恢复上次任务时，把抽查框也亮出来
         if (s.result && s.result.confirm && $('confirmBox').hidden) {
@@ -404,7 +425,10 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
           $('confirmFrame').src = s.result.confirm;
           $('confirmBox').hidden = false;
         }
-        if (s.phase === 'ready' && s.result) {
+        if (s.phase === 'cancelled') {
+          exporting = false;
+          $('expoMsg').textContent = ''; $('expoMsg').className = 'status';
+        } else if (s.phase === 'ready' && s.result) {
           show(s.result);
           if (exporting) { exporting = false; $('expoMsg').textContent = '打包好了，下载链接在下面。'; }
         } else if (s.phase === 'error' && exporting) {
@@ -430,7 +454,8 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   }
 
   // ---------- 以前的书：把 work/ 里做过的书列出来，点一本接着用 ----------
-  var JOB_PHASE = { ready: '已出书', checked: '待出整本', idle: '只有源文件' };
+  var JOB_PHASE = { ready: '已出书', checked: '待出整本', idle: '只有源文件', cancelled: '已取消',
+                    error: '上次出错', doctor: '刚体检完' };
 
   function esc(s) {
     return String(s).replace(/[&<>"]/g, function (c) {

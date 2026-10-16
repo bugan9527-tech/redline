@@ -18,6 +18,7 @@
     POST /api/build                 {job, ai:{on,endpoint,model,key,lo,hi,max}}  后台跑
     POST /api/export                {job, preset, lever}  打包 EPUB（后台跑）
     POST /api/job-delete            {job}  删掉这本书的整个工作目录
+    POST /api/cancel                {job}  取消正在跑的任务（掐掉引擎子进程）
     POST /api/ai-test               {endpoint, model, key}  测一次连接能不能用
     POST /api/read                  body = TXT/EPUB 字节；header x-filename；返回分好章的正文
     GET  /api/state?job=            进度与产物
@@ -49,25 +50,83 @@ UI = Path(__file__).resolve().parent / "ui.html"
 READER = Path(__file__).resolve().parent / "reader.html"
 MAX_UPLOAD = 80 * 1024 * 1024          # 一本书不该超过 80 MB
 SERVE_EXT = {".html", ".txt", ".json", ".epub", ".jpg", ".jpeg", ".png", ".css", ".js"}
+LOG_KEEP = 60                          # 页面上最多显示这么多行日志
+# 这几个阶段的意思都是"正在跑"。服务重启的那一刻它们还在跑，说明已经被掐断了。
+BUSY_PHASES = ("doctor", "build", "ai", "render", "export")
 
 STATE: dict[str, dict] = {}
+CANCEL: set[str] = set()               # 被用户取消过的任务，见 /api/cancel
 LOCK = threading.Lock()
+
+
+def blank_state(job: str) -> dict:
+    return {"job": job, "phase": "idle", "log": [], "done": False, "error": None}
+
+
+def state_file(job: str) -> Path:
+    return WORK / job / "state.json"
+
+
+def run_log(job: str) -> Path:
+    return WORK / job / "run.log"
+
+
+def save_state(job: str, st: dict) -> None:
+    """状态落盘。内存里的 STATE 一重启就没了，失败原因得留下来。"""
+    try:
+        state_file(job).write_text(json.dumps(st, ensure_ascii=False, indent=1),
+                                   encoding="utf-8")
+    except OSError:
+        pass
+
+
+def tail_log(job: str) -> list[str]:
+    try:
+        text = run_log(job).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return [l for l in text.splitlines() if l.strip()][-LOG_KEEP:]
+
+
+def load_state(job: str, d: Path) -> dict:
+    """内存里没有这台任务的实时状态（服务重启过），从 state.json + run.log 复原。"""
+    try:
+        saved = json.loads(state_file(job).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        saved = {}
+    ph = saved.get("phase") or ""
+    err = saved.get("error")
+    if ph in BUSY_PHASES:
+        # 重启那一刻它还在跑，那它其实已经被掐断了。说清楚，别装没事。
+        ph = phase_on_disk(d)
+        err = err or "服务重启过，这次任务被中断了，重跑一次。"
+    if not ph:
+        ph = phase_on_disk(d)
+    return {"job": job, "phase": ph, "log": tail_log(job) or saved.get("log") or [],
+            "done": ph == "ready", "error": err}
 
 
 def set_state(job: str, **kw) -> None:
     with LOCK:
-        st = STATE.setdefault(job, {"job": job, "phase": "idle", "log": [], "done": False,
-                                    "error": None})
+        st = STATE.setdefault(job, blank_state(job))
         st.update(kw)
+        save_state(job, st)
 
 
 def log_line(job: str, line: str) -> None:
     if not line:
         return
+    lines = [l for l in line.splitlines() if l.strip()]
+    if not lines:
+        return
     with LOCK:
-        st = STATE.setdefault(job, {"job": job, "phase": "idle", "log": [], "done": False,
-                                    "error": None})
-        st["log"].extend([l for l in line.splitlines() if l.strip()][-60:])
+        st = STATE.setdefault(job, blank_state(job))
+        st["log"] = (st["log"] + lines)[-LOG_KEEP:]
+    try:
+        with open(run_log(job), "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
 
 
 def job_dir(job: str) -> Path:
@@ -119,7 +178,9 @@ def task_build(job: str, ai: dict) -> None:
             pass
 
         set_state(job, phase="build", done=False, error=None, started=time.time())
-        ok, log = E.build(d, src)
+        ok, log = E.build(d, src, job=job)
+        if job in CANCEL:
+            return                       # 被取消了：不记引擎那行"退出码 1"，会看着像出错
         log_line(job, log)
         if not ok:
             raise RuntimeError("生成阅读版失败，看日志里的最后几行。")
@@ -131,19 +192,27 @@ def task_build(job: str, ai: dict) -> None:
             cap = int(ai.get("max") or 400)
             review_ok, review_log = E.ai_review(
                 d, ai.get("endpoint", ""), ai.get("model", ""), ai.get("key", ""), lo, hi, cap,
-                progress=d / "progress.json")
+                progress=d / "progress.json", job=job)
+            if job in CANCEL:
+                return
             log_line(job, review_log)
             if not review_ok:
                 log_line(job, "[warn] AI 复核这一层出错，已保留纯规则判定。")
             # 复核改的是 analyzed.json，重渲一次让 HTML 跟上
             set_state(job, phase="render")
-            render_ok, render_log = E.render(d)
+            render_ok, render_log = E.render(d, job=job)
+            if job in CANCEL:
+                return
             log_line(job, render_log)
             if not render_ok:
                 log_line(job, "[warn] 重渲失败，网页版可能还是复核前的判定。")
 
+        if job in CANCEL:
+            return
         set_state(job, phase="ready", done=True, error=None, result=E.result_of(d))
     except Exception as exc:  # noqa: BLE001
+        if job in CANCEL:
+            return                       # 别把取消盖成「出错」
         log_line(job, f"[error] {exc}")
         set_state(job, phase="error", done=True, error=str(exc))
 
@@ -152,14 +221,18 @@ def task_export(job: str, preset: str, lever: str) -> None:
     try:
         d = job_dir(job)
         set_state(job, phase="export", error=None)
-        ok, log, target = E.export(d, preset=preset, lever=lever)
+        ok, log, target = E.export(d, preset=preset, lever=lever, job=job)
+        if job in CANCEL:
+            return
         log_line(job, log)
         if not ok or not target.exists():
             raise RuntimeError("EPUB 打包失败，看日志里的最后几行。")
-        set_state(job, phase="ready", result=E.result_of(d))
+        set_state(job, phase="ready", done=True, error=None, result=E.result_of(d))
     except Exception as exc:  # noqa: BLE001
+        if job in CANCEL:
+            return
         log_line(job, f"[error] {exc}")
-        set_state(job, phase="error", error=str(exc))
+        set_state(job, phase="error", done=True, error=str(exc))
 
 
 # ---------- HTTP ----------
@@ -257,13 +330,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with LOCK:
                 st = STATE.get(job)
-            if st:
-                out = dict(st)
-            else:
-                # 服务重启过，内存状态没了：按磁盘上的产物判断这台任务走到哪了
-                ph = phase_on_disk(d)
-                out = {"job": job, "phase": ph, "log": [], "done": ph == "ready",
-                       "error": None}
+            # 内存里没有（服务重启过）就从磁盘复原，失败原因不会丢
+            out = dict(st) if st else load_state(job, d)
             out["result"] = (st or {}).get("result") or E.result_of(d)
             out["progress"] = E.read_progress(d)
             return self.send_json(out)
@@ -310,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
             job, d = E.new_job(name)
             src = E.save_source(d, name, data)
             set_state(job, phase="doctor", done=False, error=None)
-            ok, log, confirm = E.doctor(d, src)
+            ok, log, confirm = E.doctor(d, src, job=job)
             log_line(job, log)
             if not ok or not confirm.exists():
                 set_state(job, phase="error", done=True, error="体检 / 抽查失败，看日志。")
@@ -346,8 +414,9 @@ class Handler(BaseHTTPRequestHandler):
             job = body.get("job") or ""
             if self.job_path(job) is None:
                 return
-            if STATE.get(job, {}).get("phase") in ("build", "ai", "render", "export"):
+            if STATE.get(job, {}).get("phase") in BUSY_PHASES:
                 return self.fail(409, "已经在跑了")
+            CANCEL.discard(job)              # 上一次取消过的话，这次重新算数
             set_state(job, phase="build", done=False, error=None)
             threading.Thread(target=task_build, args=(job, body.get("ai") or {}), daemon=True).start()
             return self.send_json({"job": job, "phase": "build", "started": True})
@@ -357,12 +426,29 @@ class Handler(BaseHTTPRequestHandler):
             job = body.get("job") or ""
             if self.job_path(job) is None:
                 return
-            if STATE.get(job, {}).get("phase") in ("build", "ai", "render", "export"):
+            if STATE.get(job, {}).get("phase") in BUSY_PHASES:
                 return self.fail(409, "已经在跑了")
+            CANCEL.discard(job)
+            set_state(job, phase="export", done=False, error=None)
             threading.Thread(target=task_export,
                              args=(job, body.get("preset") or "balance",
                                    body.get("lever") or "color"), daemon=True).start()
             return self.send_json({"job": job, "phase": "export", "started": True})
+
+        if path == "/api/cancel":
+            body = self.read_json()
+            job = body.get("job") or ""
+            if self.job_path(job) is None:
+                return
+            if STATE.get(job, {}).get("phase") not in BUSY_PHASES:
+                return self.fail(409, "这本书没在跑，不用取消。")
+            CANCEL.add(job)                  # 先立旗：跑任务的那条线程照它决定要不要写结局
+            killed = E.cancel(job)           # 再把正在跑的子进程掐掉
+            log_line(job, "[cancelled] 用户取消了这次任务。")
+            set_state(job, phase="cancelled", done=True,
+                      error="已取消，可以重新跑一次。")
+            return self.send_json({"ok": True, "job": job, "phase": "cancelled",
+                                   "killed": killed})
 
         if path == "/api/job-delete":
             body = self.read_json()
@@ -370,7 +456,7 @@ class Handler(BaseHTTPRequestHandler):
             d = self.job_path(job)
             if d is None:
                 return
-            if STATE.get(job, {}).get("phase") in ("build", "ai", "render", "export"):
+            if STATE.get(job, {}).get("phase") in BUSY_PHASES:
                 return self.fail(409, "这本书还在跑，等它停下来再删。")
             try:
                 E.remove_job(d)
@@ -378,6 +464,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(500, f"删不掉：{exc}")
             with LOCK:
                 STATE.pop(job, None)
+            CANCEL.discard(job)
             return self.send_json({"ok": True, "job": job, "jobs": list_jobs()})
 
         return self.fail(404, "没有这个地址")

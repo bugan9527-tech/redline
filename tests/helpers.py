@@ -27,9 +27,13 @@ class WorkCase(unittest.TestCase):
         self._orig = (E.WORK, S.WORK)
         E.WORK = S.WORK = self.work = Path(self._tmp.name)
         S.STATE.clear()
+        S.CANCEL.clear()
+        E.PROCS.clear()
 
     def tearDown(self) -> None:
         S.STATE.clear()
+        S.CANCEL.clear()
+        E.PROCS.clear()
         E.WORK, S.WORK = self._orig
         self._tmp.cleanup()
 

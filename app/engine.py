@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -26,23 +27,71 @@ PY = sys.executable or "python"
 
 SAFE_NAME = re.compile(r"[^0-9A-Za-z_\-\.\u4e00-\u9fff]+")
 
+# 正在跑的子进程，按任务号登记。取消任务时靠它把进程掐掉——
+# 一次处理最长要跑一小时（三百多万字的大书），不给取消就只能干等。
+PROCS: dict[str, subprocess.Popen] = {}
+_PLOCK = threading.Lock()
 
-def _run(args: list[str], timeout: int = 1800, env: dict | None = None) -> tuple[bool, str]:
-    """在项目内跑引擎脚本，返回 (是否成功, 日志)。cwd 永远指向 work/。"""
+
+def _kill(proc: subprocess.Popen) -> None:
+    """子进程下面还挂着孙子进程（引擎自己也可能再起进程），杀就要杀整棵。"""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=20)
+        else:
+            proc.kill()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def cancel(job: str) -> bool:
+    """掐掉这个任务正在跑的子进程。返回是否真掐到了（没在跑就是 False）。"""
+    with _PLOCK:
+        proc = PROCS.get(job)
+    if proc is None or proc.poll() is not None:
+        return False
+    _kill(proc)
+    return True
+
+
+def _run(args: list[str], timeout: int = 1800, env: dict | None = None,
+         job: str | None = None) -> tuple[bool, str]:
+    """在项目内跑引擎脚本，返回 (是否成功, 日志)。cwd 永远指向 work/。
+
+    带 job 就把这个子进程登记下来，服务端的 /api/cancel 才能把它掐掉。
+    """
     WORK.mkdir(parents=True, exist_ok=True)
     child = os.environ.copy()
     if env:
         child.update(env)
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [PY, *args],
-            cwd=str(WORK), capture_output=True, text=True, env=child,
-            encoding="utf-8", errors="replace", timeout=timeout,
+            cwd=str(WORK), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=child, encoding="utf-8", errors="replace",
         )
+    except OSError as exc:  # noqa: BLE001
+        return False, f"[error] 进程起不来：{exc}"
+    if job:
+        with _PLOCK:
+            PROCS[job] = proc
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        log = ((out or "") + (err or "")).strip()
+        if proc.returncode == 0:
+            return True, log
+        return False, log or f"[error] 退出码 {proc.returncode}"
     except subprocess.TimeoutExpired:
+        _kill(proc)
+        proc.communicate()
         return False, f"[timeout] 超过 {timeout}s 没跑完：{' '.join(args)}"
-    log = (proc.stdout or "") + (proc.stderr or "")
-    return proc.returncode == 0, log.strip()
+    finally:
+        if job:
+            with _PLOCK:
+                PROCS.pop(job, None)
 
 
 def new_job(original_name: str) -> tuple[str, Path]:
@@ -102,36 +151,40 @@ def reader_of(d: Path) -> Path | None:
 
 # ---------- 三段真实工作 ----------
 
-def doctor(d: Path, src: Path) -> tuple[bool, str, Path]:
+def doctor(d: Path, src: Path, job: str | None = None) -> tuple[bool, str, Path]:
     """体检 + 前几章抽查页（引擎强制的确认步骤，整本 build 之前必须先过这一关）。"""
-    ok, log = _run([str(RUN_PY), "doctor", str(src), "--chapters", "3", "--from", "1", "-o", str(d)], 900)
+    ok, log = _run([str(RUN_PY), "doctor", str(src), "--chapters", "3", "--from", "1", "-o", str(d)],
+                   900, job=job)
     return ok, log, d / "confirm" / "book.html"
 
 
-def build(d: Path, src: Path, mode: str = "auto") -> tuple[bool, str]:
+def build(d: Path, src: Path, mode: str = "auto", job: str | None = None) -> tuple[bool, str]:
     """正式出阅读版：解析 -> 判定 -> 对照表 -> 渲染。"""
-    return _run([str(RUN_PY), "build", str(src), "--mode", mode, "-o", str(out_of(d))], 3600)
+    return _run([str(RUN_PY), "build", str(src), "--mode", mode, "-o", str(out_of(d))],
+                3600, job=job)
 
 
-def render(d: Path) -> tuple[bool, str]:
+def render(d: Path, job: str | None = None) -> tuple[bool, str]:
     """AI 层改过 analyzed.json 之后，用同一份数据重渲一次 HTML。"""
     out = out_of(d)
     return _run([str(RENDER_PY), str(out / "analyzed.json"), "-o", str(out / "index.html"),
-                 "--mode", "auto"], 1800)
+                 "--mode", "auto"], 1800, job=job)
 
 
-def export(d: Path, preset: str = "balance", lever: str = "color") -> tuple[bool, str, Path]:
+def export(d: Path, preset: str = "balance", lever: str = "color",
+           job: str | None = None) -> tuple[bool, str, Path]:
     """只出 EPUB。PDF 那一层要靠本机浏览器无头打印，大书会把进程拖死，已经去掉。"""
     out = out_of(d)
     target = out / f"{read_meta(d)['name']}.epub"
     args = [str(RUN_PY), "export", str(out / "analyzed.json"), "--format", "epub",
             "--preset", preset, "--lever", lever, "-o", str(target)]
-    ok, log = _run(args, 1800)
+    ok, log = _run(args, 1800, job=job)
     return ok, log, target
 
 
 def ai_review(d: Path, endpoint: str, model: str, key: str, lo: float, hi: float,
-              cap: int, dry: bool = False, progress: Path | None = None) -> tuple[bool, str]:
+              cap: int, dry: bool = False, progress: Path | None = None,
+              job: str | None = None) -> tuple[bool, str]:
     """只把模糊带的段落交给用户自己的模型复核，结果写回 analyzed.json。
 
     模型用的判定标准来自 skill 自己写的 references/（只读），不是另编一套。
@@ -146,7 +199,7 @@ def ai_review(d: Path, endpoint: str, model: str, key: str, lo: float, hi: float
     env = {"WNF_AI_KEY": key or ""}
     if progress is not None:
         env["WNF_PROGRESS"] = str(progress)
-    return _run(args, 3600, env=env)
+    return _run(args, 3600, env=env, job=job)
 
 
 def read_progress(d: Path) -> dict:
