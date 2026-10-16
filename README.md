@@ -70,6 +70,21 @@ WNF_SLOW=1 python -m unittest discover -s tests              # bash
 
 测试全程把工作目录指到临时目录，**不会碰你真实的 `work/`**。
 
+## 提交与推送
+
+`origin` 走 SSH（`git@github.com:bugan9527-tech/redline.git`），推送就一条命令：
+
+```bash
+git commit -am "说明"
+git push
+```
+
+本机 **`github.com:443`（HTTPS）连不通**，别把 remote 换回 `https://` 地址。
+
+一条踩过的坑：**不要**用 GitHub REST 的 git-data 接口（`POST /git/commits`）造提交来推送。
+GitHub 会把提交时间转成 UTC、偏移量强制写成 `+0000`，而本机提交是 `+0800`——同一时刻两种
+写法，SHA 必定对不上，本地和远端就再也合不拢了。走 SSH 才是字节保真。
+
 ## HTTP 接口
 
 后端是网页端和 Android 端共用的契约。所有响应都是 JSON，出错统一是
