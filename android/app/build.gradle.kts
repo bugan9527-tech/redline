@@ -139,12 +139,14 @@ chaquopy {
             // 这样 scripts/ 与 assets/ 的相对层级原样保留，
             // render.py 里的 __file__.parent.parent/"assets" 才找得到模板。
             srcDir("../../engine/webnovel-focus")
-            // AI 复核层（桌面版 app/ai_layer.py）也照原样引用，不拷贝：它是独立一层，
-            // 不碰引擎，判定标准仍只读自 references/。桌面 app/ 里其余那些（服务端、
-            // 引擎包装、网页）Android 一条都用不上，逐个剔掉，别把它们拖进 APK。
+            // AI 复核层（桌面版 app/ai_layer.py）与解书层（app/bookread.py）也照原样引用，
+            // 不拷贝：前者是独立一层，不碰引擎，判定标准仍只读自 references/；后者负责
+            // 把 EPUB 解成章节分明的文本——引擎只吃 TXT，网页端 server.py 走的也是同一个它，
+            // 剔除它等于把 EPUB 这条入口一起剔了。
+            // 桌面 app/ 里其余那些（服务端、引擎包装、网页）Android 一条都用不上，逐个剔掉。
             // 落点与引擎同层（源根），runner 里会把 ai_layer.ENGINE 指到源根。
             srcDir("../../app")
-            exclude("__pycache__/**", "data/**", "bookread.py", "engine.py",
+            exclude("__pycache__/**", "data/**", "engine.py",
                 "server.py", "reader.html", "ui.html")
         }
     }

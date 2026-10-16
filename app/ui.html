@@ -48,9 +48,6 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 .field{display:grid;gap:6px;margin-bottom:16px}
 .field label{font-size:15px;color:var(--muted)}
 .field input[type=text],.field input[type=password],.field input[type=number]{background:var(--bg);border:0;padding:12px 14px;width:100%}
-.switch{display:flex;gap:12px;align-items:center;margin-bottom:18px}
-.switch input{width:20px;height:20px;accent-color:#062b8a}
-.switch span{font-size:15px;color:var(--muted)}
 .hint{font-size:15px;color:var(--muted);margin-top:10px;max-width:52ch}
 .log{background:var(--bg);padding:18px;font-size:15px;line-height:1.6;min-height:120px;max-height:300px;overflow:auto;white-space:pre-wrap}
 .pill{display:inline-block;background:var(--bg);padding:6px 12px;font-size:15px;margin:0 8px 8px 0}
@@ -104,8 +101,8 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     </section>
 
     <section class="card">
-      <h2>二 · AI 复核（可不接）</h2>
-      <p class="note">引擎本体是纯本地规则，不联网。你接上自己的模型后，它会<b>按 webnovel-focus 这份 skill 的判定标准</b>，只把规则判不准的那一段（默认 0.30~0.70）复核一遍。不接也照样出书。</p>
+      <h2>二 · AI 复核（必须）</h2>
+      <p class="note">引擎本体是纯本地规则，判不准的那一段（默认 0.30~0.70）<b>必须</b>交给你的模型复核一遍——这一层是必经的，下面三项不配好就出不了书。喂给模型的判定标准，就是 <b>webnovel-focus 这份 skill 自己写的规则</b>，不是另编一套。</p>
       <div class="field">
         <label for="provider">用哪家（选一下，自动填地址和模型）</label>
         <select id="provider" style="background:var(--bg);border:0;padding:12px 14px;width:100%">
@@ -124,10 +121,6 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
         <span class="pill">通义千问 · qwen-plus</span>
         <span class="pill">智谱 GLM · glm-4-flash</span>
         <span class="pill">OpenAI · gpt-4o-mini</span>
-      </div>
-      <div class="switch">
-        <input type="checkbox" id="aiOn">
-        <span>开启 AI 复核（用你自己的接口和 Key）</span>
       </div>
       <div class="field">
         <label for="endpoint">接口地址（兼容 OpenAI /chat/completions）</label>
@@ -150,7 +143,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 
     <section class="card">
       <h2>三 · 进度</h2>
-      <p class="note">逐段判读是本地跑的，不会上传你的书。只有 AI 复核开着时，那几段拿不准的文字才会发给你自己选的接口。</p>
+      <p class="note">逐段判读是本地跑的，不会上传你的书。只有那几段拿不准的文字，才会发给你自己选的接口复核。</p>
       <div class="row">
         <button class="btn" id="build" type="button" disabled>生成阅读版</button>
         <button class="btn btn-sm btn-quiet" id="cancel" type="button" hidden>取消</button>
@@ -158,7 +151,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
       </div>
       <div class="pbar" id="pbar" hidden><i id="pbarFill"></i></div>
       <div class="bar-text" id="barText"></div>
-      <p class="hint" id="aiEst" hidden>开了 AI 复核，整本一般要 <b>10–20 分钟</b>：引擎先把整本过一遍，再把拿不准的那几批发给你自己选的模型。上面这条进度会一直走，说明它还在干活，不是卡住了。中途刷新也不怕，回来会接着显示进度。</p>
+      <p class="hint" id="aiEst">整本一般要 <b>10–20 分钟</b>：引擎先把整本过一遍，再把拿不准的那几批发给你自己选的模型复核。上面这条进度会一直走，说明它还在干活，不是卡住了。中途刷新也不怕，回来会接着显示进度。</p>
       <div class="log" id="log">（还没有开始）</div>
     </section>
 
@@ -262,13 +255,12 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
       if (saved.endpoint) $('endpoint').value = saved.endpoint;
       if (saved.model) $('model').value = saved.model;
       if (saved.key) $('key').value = saved.key;
-      $('aiOn').checked = !!saved.on;
     }
     function save() {
-      store.set('ai', { provider: $('provider').value, on: $('aiOn').checked,
+      store.set('ai', { provider: $('provider').value,
         endpoint: $('endpoint').value.trim(), model: $('model').value.trim(), key: $('key').value });
     }
-    ['provider', 'endpoint', 'model', 'key', 'aiOn'].forEach(function (id) {
+    ['provider', 'endpoint', 'model', 'key'].forEach(function (id) {
       $(id).addEventListener('change', save);
       $(id).addEventListener('input', save);
     });
@@ -288,23 +280,22 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
       .then(function () { $('aiTest').disabled = false; });
   });
 
-  function syncEst() { $('aiEst').hidden = !$('aiOn').checked; }
-  $('aiOn').addEventListener('change', syncEst);
-  syncEst();
-
   // ---------- 生成 ----------
   function build(skipConfirm) {
     if (!job) return;
     beganAt = Date.now() / 1000;
     $('build').disabled = true; $('goBuild').disabled = true; $('epub').disabled = true;
     var ai = {
-      on: $('aiOn').checked,
       endpoint: $('endpoint').value.trim(),
       model: $('model').value.trim(),
       key: $('key').value,
       lo: 0.30, hi: 0.70, max: 400
     };
-    if (ai.on && !ai.key) { $('log').textContent = '开了 AI 复核但没填 Key。填上，或者把开关关掉走纯规则。'; $('build').disabled = false; return; }
+    // AI 复核是必须的一层，没有关掉它的开关：三样缺一条就别发请求了，服务端也会回 400。
+    if (!ai.endpoint || !ai.model || !ai.key) {
+      $('log').textContent = 'AI 复核是必须的一层：接口地址、模型名、Key 都填上才能出书。';
+      $('build').disabled = false; $('goBuild').disabled = false; return;
+    }
     fetch('/api/build', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job: job, ai: ai }) })
       .then(function (r) { return r.json(); })
       .then(function (j) { if (j.error) { $('log').textContent = j.error; $('build').disabled = false; } })

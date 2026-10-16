@@ -541,8 +541,8 @@ button{font:inherit;color:inherit}
             <p class="item-desc">鼠标停在段落上，能看到它为什么被这么判；不顺眼的段落一键保留原文。</p>
           </div>
           <div class="item">
-            <div class="item-row"><span class="item-name">AI 复核</span><span class="leader"></span><span class="item-val">可选 · 自带 Key</span></div>
-            <p class="item-desc">只在拿不准的段落上叫你的模型复核一遍，Key 用完即走，不落盘。</p>
+            <div class="item-row"><span class="item-name">AI 复核</span><span class="leader"></span><span class="item-val">必须 · 自带 Key</span></div>
+            <p class="item-desc">规则拿不准的段落（大概三成到七成）必须叫你的模型复核一遍，Key 用完即走，不落盘。</p>
           </div>
         </div>
       </div>
@@ -591,16 +591,16 @@ button{font:inherit;color:inherit}
         <p class="q-a">它按一套写死的规则判，不是凭感觉猜：零信息的求票、作者话、水印直接判死；写景、复述、对话这类由你决定要不要退浅；情节永远保护。每段都标着判定依据，鼠标停上去就能看到，不服的段落一键保留原文。</p>
       </details>
       <details class="q reveal">
-        <summary>一定要接 AI 吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
-        <p class="q-a">不一定要。纯规则也能跑完出一本书。接 AI 是在规则拿不准的那一段（大概三成到七成的模糊带）叫你的模型复核一遍，结果按原来的格式写回去。可以随时关掉，用纯规则。</p>
+        <summary>AI 复核能关掉吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
+        <p class="q-a">关不掉，它是必经的一层。规则拿不准的那一段（大概三成到七成的模糊带）一定要叫你的模型复核一遍，结果按原来的格式写回去。接口没配好就不出书，也不会静默退回纯规则。</p>
       </details>
       <details class="q reveal">
         <summary>我要填自己的 API Key 吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
-        <p class="q-a">填你自己的。用哪家由你决定。Key 只在这次请求里用，不写进文件、不存下来。关掉 AI 复核的开关就不会用上它。</p>
+        <p class="q-a">填你自己的。用哪家由你决定。出书必须过 AI 复核这一层，接口地址、模型名、Key 三样配齐才能开工；Key 只在这次请求里用，不写进文件、不存下来。</p>
       </details>
       <details class="q reveal">
         <summary>文件会被存下来吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
-        <p class="q-a">拆章、判读、打包都在你自己的机器上做完，我们不收你的书，也不看里面写了什么。只有你开了 AI 复核，那几段拿不准的文字才会发给你自己选的模型服务商。</p>
+        <p class="q-a">拆章、判读、打包都在你自己的机器上做完，我们不收你的书，也不看里面写了什么。只有那几段拿不准的文字会发给你自己选的模型服务商，其余一步不落地留在本机。</p>
       </details>
     </div>
   </div>

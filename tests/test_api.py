@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import http.client
+import http.server
 import json
 import os
 import sys
@@ -28,6 +29,59 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import engine as E  # noqa: E402
 import server as S  # noqa: E402
 from helpers import WorkCase, make_epub, sample_txt  # noqa: E402
+
+
+def _stub_config() -> dict:
+    """一份齐全的 ai 配置，给「走不到复核那一步」的用例用。
+
+    书没有源文件的话，判定会先失败，根本到不了 AI 复核，所以地址给个没人听的端口就行；
+    真要跑复核的用例用 AiStub 的端口。
+    """
+    return {"endpoint": "http://127.0.0.1:9/v1", "model": "stub-model", "key": "sk-test"}
+
+
+class AiStub:
+    """假的 OpenAI 兼容接口：只回一个符合约定的打分数组。
+
+    AI 复核现在是必经的一层，出书就得真的发一次请求。测试不该依赖外部模型，
+    所以起一个本机小服务顶上，端点指向它——走的仍是 ai_layer 那条真路子。
+    """
+
+    def __init__(self) -> None:
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802  （父类就是这么命名的）
+                n = int(self.headers.get("content-length") or 0)
+                body = json.loads(self.rfile.read(n) or b"{}")
+                # 按问了多少段回多少个分数：散文按位置配对（见 ai_layer.apply）
+                asked = json.loads((body.get("messages") or [{}])[-1].get("content") or "[]")
+                scored = [{"i": it["i"], "score": 0.9, "why": "测试"} for it in asked]
+                payload = json.dumps(
+                    {"choices": [{"message": {"content": json.dumps(scored, ensure_ascii=False)}}]},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args) -> None:
+                pass                                  # 测试里别刷屏
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def config(self) -> dict:
+        """一份齐全的 ai 配置（/api/build 要的三样都在）。"""
+        return {"endpoint": f"http://127.0.0.1:{self.httpd.server_address[1]}/v1",
+                "model": "stub-model", "key": "sk-test"}
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
 
 
 class ApiCase(WorkCase):
@@ -303,10 +357,23 @@ class TestCancelContract(ApiCase):
         S.set_state(d.name, phase="render")
         self.assertEqual(self.http_json("POST", "/api/cancel", {"job": d.name})[0], 200)
         # 再点一次"出整本"：接口必须接住，说明"已取消"没把它挡在门外
-        code, _ = self.http_json("POST", "/api/build", {"job": d.name, "ai": {"on": False}})
+        code, _ = self.http_json("POST", "/api/build", {"job": d.name, "ai": _stub_config()})
         self.assertEqual(code, 200)
         # 这本书没有源文件，后台线程会很快失败。等它收尾，别让它和临时目录的清理打架。
         self.wait_until(d.name, lambda s: s.get("phase") in ("ready", "error"), "重跑收尾", 60)
+
+    def test_build_refuses_incomplete_ai_config(self):
+        """AI 复核是必经的一层：接口 / 模型 / Key 缺一条就别想开工（旧的 on:false 也不算数）。"""
+        d = self.make_job("没配接口的书")
+        for ai in ({}, {"on": False}, {"endpoint": "https://x/v1", "model": "m", "key": ""},
+                   {"endpoint": "", "model": "m", "key": "sk-x"}):
+            code, data = self.http_json("POST", "/api/build", {"job": d.name, "ai": ai})
+            self.assertEqual(code, 400, ai)
+            self.assertIn("必须", data.get("error", ""))
+        # 配齐了才收下
+        code, _ = self.http_json("POST", "/api/build", {"job": d.name, "ai": _stub_config()})
+        self.assertEqual(code, 200)
+        self.wait_until(d.name, lambda s: s.get("phase") in ("ready", "error"), "收尾", 60)
 
 
 # ---------- 状态持久化 ----------
@@ -343,7 +410,16 @@ class TestStatePersistence(ApiCase):
 @unittest.skipUnless(os.environ.get("WNF_SLOW") == "1",
                      "完整链路会真的跑引擎，设 WNF_SLOW=1 才跑")
 class TestFullChain(ApiCase):
-    """上传 → 出整本 → 打包 EPUB → 删掉。整条线上唯一的真活儿。"""
+    """上传 → 出整本（含必经的 AI 复核）→ 打包 EPUB → 删掉。整条线上唯一的真活儿。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # AI 复核是必经的一层，出整本就会真的发请求；拿本机假接口顶上，别去碰外部模型。
+        self.ai = AiStub()
+
+    def tearDown(self) -> None:
+        self.ai.close()
+        super().tearDown()
 
     def test_upload_build_export_delete(self):
         code, up = self.upload(sample_txt(10), "链路测试.txt")
@@ -351,7 +427,7 @@ class TestFullChain(ApiCase):
         job = up["job"]
         self.assertEqual(up["phase"], "checked")
 
-        code, _ = self.http_json("POST", "/api/build", {"job": job, "ai": {"on": False}})
+        code, _ = self.http_json("POST", "/api/build", {"job": job, "ai": self.ai.config})
         self.assertEqual(code, 200, job)
         st = self.wait_until(job, lambda s: s.get("phase") in ("ready", "error"),
                              "整本出完")
@@ -383,7 +459,7 @@ class TestFullChain(ApiCase):
         self.assertEqual(code, 200, up)
         job = up["job"]
 
-        self.http_json("POST", "/api/build", {"job": job, "ai": {"on": False}})
+        self.http_json("POST", "/api/build", {"job": job, "ai": self.ai.config})
         code, _ = self.http_json("POST", "/api/cancel", {"job": job})
         self.assertEqual(code, 200, "任务刚起跑就叫停，不该被拒")
 

@@ -3,13 +3,18 @@
 把一本中文网文（TXT / EPUB）读成**深浅**。
 
 逐段判读，关键情节加重、注水淡化、零信息判死，产出一份强度可调的 HTML 阅读版和一份
-EPUB。整条流水线都跑在你自己这台机器上，不需要联网，也不上传你的书。
+EPUB。引擎本体是纯本地规则；规则判不准的那一段（默认 0.30~0.70 的模糊带）**必须**接上
+你自己的模型复核一遍——端点、模型、Key 都由你填，喂给它的判定标准只读自引擎 skill 的
+`references/`，Key 不落盘、不进日志。这一层是必经的，配不齐接口就出不了书。
+
+引擎只有一份：桌面上跑成本地网页，手机上打包进 APK 在本地跑。
 
 ## 要什么
 
 - 一台能跑 Python 的机器（Windows / macOS / Linux 都行）
 - **Python 3.10 或更高，不需要 `pip install` 任何东西**——后端只用标准库
 - 引擎副本要在 `engine/webnovel-focus/`（仓库里已经带了）
+- 一个 OpenAI 兼容的接口地址、模型名和 Key——AI 复核是必经的一层，配不齐就出不了书
 
 ## 跑起来
 
@@ -36,7 +41,7 @@ python app/server.py --host 0.0.0.0     # 对局域网开放（默认只开本�
 | 地址 | 是什么 |
 |---|---|
 | `/` | 首页，介绍 |
-| `/app` | 工作台：选书 → 体检抽查 → 出整本 → 导出 EPUB |
+| `/app` | 工作台：选书 → 体检抽查 → 出整本（含必经的 AI 复核）→ 导出 EPUB |
 | `/read` | 阅读器，不落盘，直接把一本 TXT / EPUB 摊开读 |
 
 ## 目录
@@ -50,6 +55,9 @@ app/            自有应用层：后端 + 三个页面
   ui.html       工作台
   reader.html   阅读器
 engine/         webnovel-focus 引擎的只读副本
+android/        Android 端：把 engine/ 那份引擎打进 APK，判定整个跑在手机里
+  app/          APK 模块（Chaquopy 打包 Python 3.10，壳层是 Compose 三页）
+  tools/        真机回归：headless 跑一遍判定，跟桌面逐段对照
 assets/         落地页图片
 tests/          测试（标准库 unittest，零依赖）
 work/           运行时产物，随时可以整个删掉（已 gitignore）
@@ -101,7 +109,7 @@ GitHub 会把提交时间转成 UTC、偏移量强制写成 `+0000`，而本机�
 | GET | `/api/skill-rules` | AI 复核实际使用的判定标准（纯文本） |
 | POST | `/api/upload` | body = 文件字节，header `x-filename`；返回 job + 抽查页 |
 | POST | `/api/read` | body = 文件字节，header `x-filename`；返回分好章的正文，不落盘 |
-| POST | `/api/build` | `{job, ai:{on,endpoint,model,key,lo,hi,max}}`，后台跑 |
+| POST | `/api/build` | `{job, ai:{endpoint,model,key,lo,hi,max}}`（三样缺一条回 400），后台跑 |
 | POST | `/api/cancel` | `{job}` 取消正在跑的任务 |
 | POST | `/api/export` | `{job, preset, lever}`，后台打包 EPUB |
 | POST | `/api/job-delete` | `{job}` 删掉这本书的整个工作目录 |
@@ -187,14 +195,16 @@ percent-encode**（网页端用的就是 `encodeURIComponent(file.name)`）。
 ## 隐私
 
 - 判读全程在本地，书不上传
-- 只有你自己开启 AI 复核、且只把规则判不准的那一段（默认 0.30~0.70 的模糊带）
-  发给你自己填的接口
+- AI 复核只把规则判不准的那一段（默认 0.30~0.70 的模糊带）发给你自己填的接口，
+  其余部分一步不落地留在本机
 - API Key 只存在浏览器 `localStorage` 里，不写进任何文件、不进日志
 - AI 复核用的判定标准来自引擎 skill 自己的 `references/`（只读），不是另编一套
 
 ## 已知限制
 
 - 只吃 TXT 和 EPUB。PDF 要先抽成文本，这层没做
+- **AI 复核必须有可用的模型接口**：这一层是必经的，接口不通或额度用尽就不出书，
+  不会静默退回纯规则
 - **PDF 导出已经拿掉**：那要靠本机浏览器的无头打印，几十万字的大书会把进程拖死
 - 默认只听 `127.0.0.1`。要给别人用就 `--host 0.0.0.0`，别开到公网
 - 单机单进程：并发没有管制，`work/` 也不会自动回收，用「删掉」自己清

@@ -22,6 +22,7 @@ SCRIPTS = _HERE / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import bookread  # noqa: E402
 import detect_rules  # noqa: E402
 import pack_epub  # noqa: E402
 import parse as parse_mod  # noqa: E402
@@ -54,6 +55,28 @@ def prescan(src, out_dir) -> dict:
     _write_json(out_dir / "prescan.json", doc)
     (out_dir / "prescan.txt").write_text(prescan_mod.format_report(doc), encoding="utf-8")
     return doc
+
+
+def prepare_source(raw_path, out_dir, name="") -> dict:
+    """选中的文件 -> 引擎认的 src.txt。返回 {"kind", "chapters"} 只给界面回话。
+
+    引擎只吃 TXT（EPUB / HTML 要先抽成文本再进来），所以 EPUB 得先按书脊解成章节
+    分明的正文。这层照搬网页端 server.py 的做法，用的是同一个 bookread，Android 侧
+    不另起一套解书逻辑。TXT 一个字节都不碰，改名过去就是。
+    """
+    raw_path, out_dir = Path(raw_path), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    src = out_dir / "src.txt"
+    with raw_path.open("rb") as fh:
+        head = fh.read(2)
+    # 认法跟 bookread.read_book 一致：扩展名或 zip 文件头。
+    if (name or raw_path.name).lower().endswith(".epub") or head == b"PK":
+        book = bookread.read_book(raw_path.read_bytes(), name)
+        src.write_bytes(bookread.to_txt(book).encode("utf-8"))
+        raw_path.unlink(missing_ok=True)
+        return {"kind": "epub", "chapters": len(book.get("chapters", []))}
+    os.replace(raw_path, src)
+    return {"kind": "txt", "chapters": 0}
 
 
 def _emit(progress, msg: str) -> None:
@@ -147,15 +170,15 @@ def ai_review(src_dir, endpoint, model, key, lo=0.30, hi=0.70, cap=400, batch=16
               progress_path="", progress=None) -> dict:
     """对已判定的 analyzed.json 做 AI 复核（只碰模糊带），再按 build 的同一套模式重渲。
 
-    复核改的是 analyzed.json，HTML 得跟着重来一次。离线纯规则仍是默认路径，
-    这一层只在用户自己配了 endpoint / model / key 之后才走；没有 key 就直接跳过。
+    复核改的是 analyzed.json，HTML 得跟着重来一次。这一层是必经的：没配 key 就是没配好，
+    直接报错；某一批没跑成也不静默退回纯规则——那样等于悄悄少判一段。
     progress_path 给一个普通路径，复核边跑边把 {done,total,reviewed,failed} 写进去，
     界面靠轮询它显示进度——ai_layer 只认 WNF_PROGRESS 这个环境变量，这里替它设上。
     """
     src_dir = Path(src_dir)
     analyzed = src_dir / "analyzed.json"
     if not key:
-        return {"skipped": True, "note": "没有 key，跳过 AI 复核（纯规则）"}
+        raise ValueError("AI 复核是必须的一层：接口地址、模型名和 Key 都得先配好。")
 
     import ai_layer  # noqa: PLC0415
     ai_layer.ENGINE = _HERE
@@ -164,6 +187,10 @@ def ai_review(src_dir, endpoint, model, key, lo=0.30, hi=0.70, cap=400, batch=16
     _emit(progress, "AI 复核模糊带…")
     stats = ai_layer.run(analyzed, endpoint, model, key, float(lo), float(hi),
                          int(cap), int(batch), False)
+    if stats.get("failed"):
+        raise RuntimeError(
+            f"AI 复核有 {stats['failed']} 批没跑成（网络或额度的问题）；"
+            "确认接口能用之后再出整本。")
     _emit(progress, f"复核完成：改判 {stats.get('reviewed', 0)} 段 / "
                     f"失败 {stats.get('failed', 0)} 批")
     _emit(progress, "按复核结果重渲阅读版…")
@@ -180,6 +207,17 @@ def ai_review(src_dir, endpoint, model, key, lo=0.30, hi=0.70, cap=400, batch=16
         "batches": stats.get("batches", 0), "reviewed": stats.get("reviewed", 0),
         "failed": stats.get("failed", 0), "target": str(target),
     }
+
+
+def read_analyzed(src_dir) -> dict:
+    """复核改的是 analyzed.json，界面上的章数 / 字数 / 分层得读复核后的那份。
+
+    形状与 build 的返回一致（chapters / chars / names / tiers），界面直接拿去用。
+    """
+    doc = json.loads((Path(src_dir) / "analyzed.json").read_text(encoding="utf-8"))
+    chars = sum(len(p["text"]) for ch in doc["chapters"] for p in ch["paragraphs"])
+    return {"chapters": len(doc["chapters"]), "chars": chars,
+            "names": len(doc.get("names", [])), "tiers": tally_of(doc)}
 
 
 def doctor(src, out_dir, chapters=3, start_at=1) -> dict:

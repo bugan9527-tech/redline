@@ -50,15 +50,15 @@ import org.json.JSONObject
  * 壳层跟网页端同构的三页：首页 / 工作台 / 阅读器。
  *
  *   Home   讲清楚它干什么，两个入口。
- *   Bench  干活的地方：选书 → 抽查 → 出整本 →（可选）AI 复核 → 导出 EPUB。
+ *   Bench  干活的地方：选书 → 抽查 → 出整本（含必经的 AI 复核）→ 导出 EPUB。
  *   Reader 读书的地方：抽查页与阅读版都在这儿的 WebView 里，只留字号与换书。
  *
- * 判定这件事整个跑在手机本地（Chaquopy 把仓库里那份只读引擎塞进 APK），所以这里
- * 一条网都不用连。界面按网页端 app/ui.html 的分区排：一 · 选书、二 · AI 复核（可不接）、
+ * 判定这件事跑在手机本地（Chaquopy 把仓库里那份只读引擎塞进 APK），只有 AI 复核那一步
+ * 会连网。界面按网页端 app/ui.html 的分区排：一 · 选书、二 · AI 复核（必须）、
  * 三 · 进度、四 · 拿走、五 · 当前这本；阅读器页对着 app/reader.html 做。
  *
- * AI 复核是可选的第二条路：引擎仍是纯本地规则，只有用户自己填了接口地址与密钥，
- * 才会把规则判不准的模糊带交给他的模型复核一遍，再按复核结果重渲。默认关闭。
+ * AI 复核是必经的一层：引擎本体是纯本地规则，规则判不准的那一段模糊带一定要交给用户
+ * 自己的模型复核一遍，再按复核结果重渲。没配好接口就不出书，接口不通也不静默退回纯规则。
  *
  * 产物一律落在 filesDir/book/ 下，不碰外部存储：SAF 给的是内容 URI，
  * 不用存储权限，取回来也只是我们自己看的副本。
@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
     // 按下「导出」那一刻定下的选项；SAF 的选路径界面回来后用它，避免面板又被改一遍。
     private var pendingExport: EpubOptions? = null
 
-    // AI 复核同样是一层可选的：Off 是常态（默认不跑，纯规则）。
+    // AI 复核是必经的一层，不是可选开关：配好接口才让出书，复核结果直接改 analyzed.json。
     private var aiStage: AiStage by mutableStateOf(AiStage.Off)
     private var aiConfig: AiConfig by mutableStateOf(AiConfig())
 
@@ -270,12 +270,23 @@ class MainActivity : ComponentActivity() {
                 }
                 val dir = bookDir().apply { deleteRecursively(); mkdirs() }
                 File(dir, "name.txt").writeText(name)
-                val src = File(dir, "src.txt")
+                // 原始字节先落到私有目录：Chaquopy 只认普通路径，内容 URI 当不成文件喂进去。
+                val raw = File(dir, "raw.bin")
                 contentResolver.openInputStream(uri).use { input ->
                     requireNotNull(input) { "读不到所选文件" }
-                    src.outputStream().use { input.copyTo(it) }
+                    raw.outputStream().use { input.copyTo(it) }
                 }
-                runDoctor(src)
+                // EPUB 是个 zip，引擎只吃 TXT：这一步把它摊平成章节分明的 src.txt，
+                // 用的就是网页端那条路上同一个 bookread。TXT 只是改个名。
+                val info = asStringMap(
+                    Python.getInstance().getModule("runner").callAttr(
+                        "prepare_source", raw.absolutePath, dir.absolutePath, name,
+                    ),
+                )
+                if (info["kind"]?.toString() == "epub") {
+                    appendLog("EPUB 已解成 ${info["chapters"]} 章正文")
+                }
+                runDoctor(File(dir, "src.txt"))
             } catch (e: Throwable) {
                 fail("取书失败", e)
             }
@@ -299,6 +310,13 @@ class MainActivity : ComponentActivity() {
     // ---------- 整本：后台跑 build，进度回调到界面 ----------
 
     private fun startBuild() {
+        // AI 复核是必须的一层：接口还没配好就先别开工，把设置弹出来（那上面写着「必须」）。
+        if (!aiConfig.ready) {
+            goToPage(Page.Bench)
+            openAiSettings()
+            return
+        }
+        val cfg = aiConfig
         val dir = bookDir()
         val src = File(dir, "src.txt")
         val out = File(dir, "out")
@@ -310,14 +328,21 @@ class MainActivity : ComponentActivity() {
                 // 回调对象交给 Python 调 onStep(text)；它也跑在这条后台线程上，
                 // 所以只往里塞数据，回主线程的事交给 appendLog。
                 val bridge = ProgressBridge { appendLog(it) }
-                val doc = asStringMap(
-                    runner.callAttr(
-                        "build", src.absolutePath, out.absolutePath,
-                        null, 1, false, "auto", true, bridge,
-                    ),
+                runner.callAttr(
+                    "build", src.absolutePath, out.absolutePath,
+                    null, 1, false, "auto", true, bridge,
+                )
+                // 出整本之后紧接着复核模糊带：这一步不给跳过，改判结果直接落在 analyzed.json，
+                // 阅读版和导出都按复核后的判定来。它跑完会自己重渲，所以这里不用再渲一次。
+                val prog = File(out, "progress.json").apply { delete() }
+                runner.callAttr(
+                    "ai_review", out.absolutePath, cfg.endpoint, cfg.model, cfg.key,
+                    AI_LO, AI_HI, AI_MAX, AI_BATCH, prog.absolutePath, bridge,
                 )
                 val reader = readerHtml(out)
                 requireNotNull(reader) { "阅读版没生成" }
+                // 分层得读复核后的那份，不能拿 build 时那份旧的。
+                val doc = asStringMap(runner.callAttr("read_analyzed", out.absolutePath))
                 goTo(
                     Stage.Reading(
                         reader, bookName(), 0,
@@ -325,7 +350,7 @@ class MainActivity : ComponentActivity() {
                     ),
                 )
             } catch (e: Throwable) {
-                fail("出阅读版失败", e)
+                fail("这一本没出成", e)
             }
         }.start()
     }
@@ -431,7 +456,8 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 复核只碰模糊带：改的是 out/analyzed.json，再按 build 的同一套模式重渲阅读版。
+     * 手动再复核一遍：出整本时已经自动跑过（那是必经的一步），这里留给改了接口、
+     * 或者想重跑一次的场合。改的是 out/analyzed.json，再按同一套模式重渲阅读版；
      * 重渲写的是同一个文件名，所以读完要让 WebView 重载（版本号 +1，见 HtmlPane）。
      */
     private fun startAiReview() {
@@ -512,17 +538,13 @@ class MainActivity : ComponentActivity() {
     private fun describeAi(info: Map<String, PyObject>): String {
         val asked = info["asked"]?.toString() ?: "0"
         val reviewed = info["reviewed"]?.toString() ?: "0"
-        val failed = info["failed"]?.toString() ?: "0"
-        val note = info["note"]?.toString().orEmpty()
         return buildString {
             if (asked == "0") {
                 append("模糊带里没有段落，规则判定原样通过。")
             } else {
                 append("模糊带挑出 ").append(asked).append(" 段，改用模型判定 ")
                 append(reviewed).append(" 段")
-                if (failed != "0") append("（").append(failed).append(" 批失败，保留规则判定）")
             }
-            if (note.isNotBlank()) append("\n").append(note)
             append("\n阅读版与导出都会用复核后的判定。")
         }
     }
@@ -596,8 +618,9 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "qianshen"
-        // .txt 的 MIME 各家报得不一致，octet-stream 也得放进来，否则选不到书。
-        val PICK_MIME = arrayOf("text/plain", "application/octet-stream")
+        // .txt 各家报的 MIME 不一致，octet-stream 也得放进来；epub 自带一个 MIME，
+        // 漏了它文件在选择器里是灰的、点不动。
+        val PICK_MIME = arrayOf("text/plain", "application/octet-stream", "application/epub+zip")
 
         // AI 接入点存这儿；密钥只在这份 App 私有存储里，不进产物、不进日志。
         const val PREFS = "ai"
@@ -671,9 +694,9 @@ sealed interface EpubStage {
 }
 
 /**
- * AI 复核在界面上的几个态。Off 是常态——默认纯规则出书，一条网都不连；
- * 只有用户自己配了地址/模型/密钥，才会有 Running 这一段。问句（done/total）来自
- * Python 侧写的 progress.json，界面每 400ms 读一次。
+ * AI 复核在界面上的几个态。Off 是常态——对话框没弹着；Running 这一段是出整本时自动跑的
+ * 那一遍（必经），也可以从工作台手动再跑一遍。进度（done/total）来自 Python 侧写的
+ * progress.json，界面每 400ms 读一次。
  */
 sealed interface AiStage {
     data object Off : AiStage
@@ -740,8 +763,8 @@ private fun HomeScreen(onBench: () -> Unit, onReader: () -> Unit) {
         Text("读得更深。", style = MaterialTheme.typography.displaySmall, color = QsInk)
         VGap(18)
         Text(
-            "放一本中文网文 TXT 进去。它逐段读完，把情节压深、把注水退浅，深度由你调。" +
-                "原文一个字不改，整条流水线都在这台手机本地跑。",
+            "放一本中文网文 TXT 或 EPUB 进去。它逐段读完，把情节压深、把注水退浅，深度由你调。" +
+                "原文一个字不改：判定在你手机本地跑，判不准的那一段交给你自己的模型复核。",
             fontSize = 16.sp, lineHeight = 26.sp, color = QsMuted,
         )
         VGap(28)
@@ -750,7 +773,7 @@ private fun HomeScreen(onBench: () -> Unit, onReader: () -> Unit) {
         QsButton("打开阅读器", onReader, Modifier.fillMaxWidth(), quiet = true)
         VGap(36)
         SectionCard("它怎么工作") {
-            StepRow("一", "选书、体检", "挑一本 TXT，先体检源文件，再抽查前 3 章带标记渲染给你看。")
+            StepRow("一", "选书、体检", "挑一本 TXT 或 EPUB，先体检源文件，再抽查前 3 章带标记渲染给你看。")
             StepRow("二", "判定整本", "确认抽查页没问题，整本逐段判读，分层从「情节」到「零信息」。")
             StepRow("三", "读或拿走", "阅读器里按字号读，或者导出成 EPUB 带去看书软件里读。")
         }
@@ -808,7 +831,7 @@ private fun BenchScreen(
             .padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(10.dp))
-        Text("放一本 TXT 进来，读成深浅。", style = MaterialTheme.typography.headlineMedium, color = QsInk)
+        Text("放一本 TXT 或 EPUB 进来，读成深浅。", style = MaterialTheme.typography.headlineMedium, color = QsInk)
         VGap(10)
         Text(
             "第一步先体检 + 抽查前几章，判定合理再出整本。产物落在 App 私有目录，不上传。",
@@ -821,7 +844,7 @@ private fun BenchScreen(
                 Stage.Picker -> {
                     StatusLine("还没有选文件。")
                     VGap(12)
-                    QsButton("点这里选一本 TXT", onPick, Modifier.fillMaxWidth())
+                    QsButton("点这里选一本 TXT 或 EPUB", onPick, Modifier.fillMaxWidth())
                 }
                 is Stage.Working -> StatusLine("正在处理：${s.step}")
                 is Stage.Confirming -> {
@@ -858,9 +881,10 @@ private fun BenchScreen(
         VGap(14)
 
         SectionCard(
-            "二 · AI 复核（可不接）",
-            "可选的一层，默认关闭：判定仍全在手机本地跑。填上你自己模型的地址与密钥后，才会把" +
-                "规则判不准的模糊带交给它复核一遍。密钥只存在本机 App 私有目录。",
+            "二 · AI 复核（必须）",
+            "引擎本体是纯本地规则，判不准的那一段模糊带必须交给你的模型复核一遍——出整本时" +
+                "会自动跑这一步，三样没配好就不出书。喂给它的判定标准只读自引擎的 references/。" +
+                "密钥只存在本机 App 私有目录。",
         ) {
             Text("一键填地址与模型：", fontSize = 13.sp, color = QsMuted)
             AI_PROVIDERS.chunked(2).forEach { row ->
@@ -873,7 +897,7 @@ private fun BenchScreen(
             }
             VGap(14)
             StatusLine("接口：${aiConfig.endpoint}")
-            StatusLine("模型：${aiConfig.model} · 密钥：${if (aiConfig.ready) "已填" else "未填（不会跑复核）"}")
+            StatusLine("模型：${aiConfig.model} · 密钥：${if (aiConfig.ready) "已填" else "未填（出不了书）"}")
             VGap(12)
             var testing by remember { mutableStateOf(false) }
             var testMsg by remember { mutableStateOf("") }
@@ -888,7 +912,7 @@ private fun BenchScreen(
                 QsButton("设置", onAiSettings, quiet = true)
             }
             VGap(10)
-            QsButton("复核这本的模糊带", onAiReview, Modifier.fillMaxWidth(), enabled = hasOut)
+            QsButton("重新复核这本", onAiReview, Modifier.fillMaxWidth(), enabled = hasOut)
             if (testMsg.isNotBlank()) {
                 VGap(10)
                 StatusLine(testMsg)
@@ -1036,7 +1060,7 @@ private fun ReaderScreen(
                     )
                     VGap(14)
                     Text(
-                        "TXT 放进来，自动分好章节，就在这一页读完。全部在你自己的手机本地跑，" +
+                        "TXT 或 EPUB 放进来，自动分好章节，就在这一页读完。判定在你自己的手机本地跑，" +
                             "不上传、不改写。",
                         fontSize = 16.sp, lineHeight = 26.sp, color = QsMuted,
                     )
@@ -1170,9 +1194,9 @@ private fun AiSettingsDialog(
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "可选的一层，默认关闭：判定仍全在手机本地跑。填上你自己模型的地址与密钥后，" +
-                        "才会把规则判不准的模糊带交给它复核一遍。密钥只存在本机 App 私有目录，" +
-                        "不进产物、不进日志。",
+                    "AI 复核是必须的一层：引擎本体是纯本地规则，判不准的那一段模糊带一定要交给" +
+                        "你自己填的模型复核一遍，出整本时会自动跑这一步。三样没配好就不出书。" +
+                        "密钥只存在本机 App 私有目录，不进产物、不进日志。",
                     fontSize = 12.sp, lineHeight = 18.sp, color = QsMuted,
                 )
                 VGap(12)
@@ -1180,7 +1204,7 @@ private fun AiSettingsDialog(
                 VGap(12)
                 QsField("模型名", model, { model = it })
                 VGap(12)
-                QsField("密钥（留空=不跑复核）", key, { key = it }, placeholder = "sk-…", password = true)
+                QsField("密钥（必填，留空出不了书）", key, { key = it }, placeholder = "sk-…", password = true)
                 VGap(14)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     QsButton(

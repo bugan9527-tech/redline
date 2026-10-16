@@ -15,7 +15,7 @@
     GET  /app                       工作台
     GET  /read                      阅读器
     POST /api/upload                body = TXT / EPUB 字节；header x-filename；返回 job + 抽查页
-    POST /api/build                 {job, ai:{on,endpoint,model,key,lo,hi,max}}  后台跑
+    POST /api/build                 {job, ai:{endpoint,model,key,lo,hi,max}}  后台跑；三样缺一条回 400
     POST /api/export                {job, preset, lever}  打包 EPUB（后台跑）
     POST /api/job-delete            {job}  删掉这本书的整个工作目录
     POST /api/cancel                {job}  取消正在跑的任务（掐掉引擎子进程）
@@ -185,27 +185,32 @@ def task_build(job: str, ai: dict) -> None:
         if not ok:
             raise RuntimeError("生成阅读版失败，看日志里的最后几行。")
 
-        if ai.get("on"):
-            set_state(job, phase="ai", progress={})
-            lo = float(ai.get("lo") or 0.3)
-            hi = float(ai.get("hi") or 0.7)
-            cap = int(ai.get("max") or 400)
-            review_ok, review_log = E.ai_review(
-                d, ai.get("endpoint", ""), ai.get("model", ""), ai.get("key", ""), lo, hi, cap,
-                progress=d / "progress.json", job=job)
-            if job in CANCEL:
-                return
-            log_line(job, review_log)
-            if not review_ok:
-                log_line(job, "[warn] AI 复核这一层出错，已保留纯规则判定。")
-            # 复核改的是 analyzed.json，重渲一次让 HTML 跟上
-            set_state(job, phase="render")
-            render_ok, render_log = E.render(d, job=job)
-            if job in CANCEL:
-                return
-            log_line(job, render_log)
-            if not render_ok:
-                log_line(job, "[warn] 重渲失败，网页版可能还是复核前的判定。")
+        # AI 复核是必经的一层，没有「不接」这条分支：接口没配好在 /api/build 那关就被拦下了。
+        # 复核没跑成就出错，不静默退回纯规则——那样等于把这一层悄悄抽掉了。
+        set_state(job, phase="ai", progress={})
+        lo = float(ai.get("lo") or 0.3)
+        hi = float(ai.get("hi") or 0.7)
+        cap = int(ai.get("max") or 400)
+        review_ok, review_log, stats = E.ai_review(
+            d, ai.get("endpoint", ""), ai.get("model", ""), ai.get("key", ""), lo, hi, cap,
+            progress=d / "progress.json", job=job)
+        if job in CANCEL:
+            return
+        log_line(job, review_log)
+        if not review_ok:
+            raise RuntimeError("AI 复核这一层没跑成，这次不出书。看日志里的最后几行。")
+        if stats.get("failed"):
+            raise RuntimeError(
+                f"AI 复核有 {stats['failed']} 批没跑成（网络或额度的问题），这次不出书；"
+                "确认接口能用之后重新出整本。")
+        # 复核改的是 analyzed.json，重渲一次让 HTML 跟上
+        set_state(job, phase="render")
+        render_ok, render_log = E.render(d, job=job)
+        if job in CANCEL:
+            return
+        log_line(job, render_log)
+        if not render_ok:
+            raise RuntimeError("复核完了，但重渲失败，看日志里的最后几行。")
 
         if job in CANCEL:
             return
@@ -414,11 +419,17 @@ class Handler(BaseHTTPRequestHandler):
             job = body.get("job") or ""
             if self.job_path(job) is None:
                 return
+            ai = body.get("ai") or {}
+            # AI 复核是必须的一层，不是可选开关：三样缺一条就不给出书。
+            if not (str(ai.get("endpoint") or "").strip()
+                    and str(ai.get("model") or "").strip()
+                    and str(ai.get("key") or "").strip()):
+                return self.fail(400, "AI 复核是必须的一层：接口地址、模型名、Key 都填上才出书。")
             if STATE.get(job, {}).get("phase") in BUSY_PHASES:
                 return self.fail(409, "已经在跑了")
             CANCEL.discard(job)              # 上一次取消过的话，这次重新算数
             set_state(job, phase="build", done=False, error=None)
-            threading.Thread(target=task_build, args=(job, body.get("ai") or {}), daemon=True).start()
+            threading.Thread(target=task_build, args=(job, ai), daemon=True).start()
             return self.send_json({"job": job, "phase": "build", "started": True})
 
         if path == "/api/export":

@@ -184,11 +184,13 @@ def export(d: Path, preset: str = "balance", lever: str = "color",
 
 def ai_review(d: Path, endpoint: str, model: str, key: str, lo: float, hi: float,
               cap: int, dry: bool = False, progress: Path | None = None,
-              job: str | None = None) -> tuple[bool, str]:
+              job: str | None = None) -> tuple[bool, str, dict]:
     """只把模糊带的段落交给用户自己的模型复核，结果写回 analyzed.json。
 
     模型用的判定标准来自 skill 自己写的 references/（只读），不是另编一套。
     progress 给一个文件路径，AI 层会边跑边把进度写进去，服务端就能读出实时进度。
+    第三个返回值是这一层的统计（asked / reviewed / failed），最后一行 JSON 就是它——
+    ai_layer 单批失败是记在计数里、进程照样退 0，所以调用方得看 failed 才算数。
     """
     args = [str(AI_PY), str(out_of(d) / "analyzed.json"),
             "--endpoint", endpoint or "https://api.openai.com/v1",
@@ -199,7 +201,18 @@ def ai_review(d: Path, endpoint: str, model: str, key: str, lo: float, hi: float
     env = {"WNF_AI_KEY": key or ""}
     if progress is not None:
         env["WNF_PROGRESS"] = str(progress)
-    return _run(args, 3600, env=env, job=job)
+    ok, log = _run(args, 3600, env=env, job=job)
+
+    stats: dict = {}
+    for line in reversed((log or "").strip().splitlines()):
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and "asked" in data:
+            stats = data
+            break
+    return ok, log, stats
 
 
 def read_progress(d: Path) -> dict:

@@ -1,6 +1,6 @@
-"""AI 辅助复核层：只碰模糊带，不碰引擎。
+"""AI 复核层：只碰模糊带，不碰引擎。
 
-引擎是纯本地规则，没有 LLM。这一层是独立的，只做一件事：
+引擎是纯本地规则，没有 LLM。这一层是必经的一层（不是可选开关）：
 把规则判不准的那一段分数区间（默认 0.30 ~ 0.70）挑出来，交给用户自己的
 模型复核一遍，结果按 analyzed.json 原有的 schema 写回去（改的是
 每个段落的 score 与 evidence，kind / flags / anchors 一律不动）。
@@ -16,7 +16,7 @@ skill 的口径打分"，而不是按另一套自编规则。
     --dry         只挑段落、不联网，打印将要发出去多少段、多少字。
     --probe       只发一次最小请求，测地址 / Key / 模型通不通，不碰文件。
     --show-rules  打印实际喂给模型的判定标准（给人看的）。
-    没有 key 时：直接不跑这一层，纯规则出书。
+    没有 key 时：直接报错退出——出书必须过这一层，不静默退回纯规则。
 
 Key 只在这一次请求里用，不写进任何文件，也不进日志。
 """
@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -216,11 +217,20 @@ def run(path: Path, endpoint: str, model: str, key: str, lo: float, hi: float,
     for start in range(0, len(pairs), batch):
         chunk = pairs[start:start + batch]
         texts = [doc["chapters"][c]["paragraphs"][p]["text"] for c, p in chunk]
-        try:
-            items = ask(texts, endpoint, model, key)
-        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as exc:
+        # 网络抖一下不该让整本书重来：一批最多试三次，还不行才算这批失败。
+        items = None
+        err = None
+        for attempt in range(3):
+            try:
+                items = ask(texts, endpoint, model, key)
+                break
+            except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as exc:
+                err = exc
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+        if items is None:
             failed += 1
-            print(f"[warn] 第 {start // batch + 1} 批复核失败，保留规则判定：{exc}")
+            print(f"[warn] 第 {start // batch + 1} 批复核三次都没成，保留规则判定：{err}")
         else:
             stats = apply(doc, chunk, items)
             reviewed += stats["reviewed"]
@@ -263,8 +273,8 @@ def main() -> None:
         raise SystemExit(2)
 
     if not args.dry and not args.key:
-        print("没有 key，跳过 AI 复核（纯规则）。", file=sys.stderr)
-        raise SystemExit(0)
+        print("没有 key：AI 复核是必经的一层，出书必须过它。", file=sys.stderr)
+        raise SystemExit(2)
 
     stats = run(Path(args.src), args.endpoint, args.model, args.key,
                 args.lo, args.hi, args.cap, args.batch, args.dry)
