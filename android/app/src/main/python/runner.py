@@ -133,6 +133,55 @@ def export_epub(src_dir, out_path, preset="balance", lever="color",
             "chapters": info["chapters"], "graded": info["graded"], "strength": s}
 
 
+def ai_probe(endpoint, model, key) -> dict:
+    """测一次连接：地址 / Key / 模型能不能用。不碰任何文件。"""
+    import ai_layer  # noqa: PLC0415
+    # 打包后 ai_layer.py 落在 Chaquopy 源根，引擎也整份平铺在同一个目录下，
+    # 桌面上那套 parent.parent/"engine"/"webnovel-focus" 在这里指不到地方。
+    ai_layer.ENGINE = _HERE
+    ok, msg = ai_layer.probe(endpoint, model, key)
+    return {"ok": ok, "message": msg}
+
+
+def ai_review(src_dir, endpoint, model, key, lo=0.30, hi=0.70, cap=400, batch=16,
+              progress_path="", progress=None) -> dict:
+    """对已判定的 analyzed.json 做 AI 复核（只碰模糊带），再按 build 的同一套模式重渲。
+
+    复核改的是 analyzed.json，HTML 得跟着重来一次。离线纯规则仍是默认路径，
+    这一层只在用户自己配了 endpoint / model / key 之后才走；没有 key 就直接跳过。
+    progress_path 给一个普通路径，复核边跑边把 {done,total,reviewed,failed} 写进去，
+    界面靠轮询它显示进度——ai_layer 只认 WNF_PROGRESS 这个环境变量，这里替它设上。
+    """
+    src_dir = Path(src_dir)
+    analyzed = src_dir / "analyzed.json"
+    if not key:
+        return {"skipped": True, "note": "没有 key，跳过 AI 复核（纯规则）"}
+
+    import ai_layer  # noqa: PLC0415
+    ai_layer.ENGINE = _HERE
+    os.environ["WNF_PROGRESS"] = str(progress_path or (src_dir / "progress.json"))
+
+    _emit(progress, "AI 复核模糊带…")
+    stats = ai_layer.run(analyzed, endpoint, model, key, float(lo), float(hi),
+                         int(cap), int(batch), False)
+    _emit(progress, f"复核完成：改判 {stats.get('reviewed', 0)} 段 / "
+                    f"失败 {stats.get('failed', 0)} 批")
+    _emit(progress, "按复核结果重渲阅读版…")
+
+    doc = json.loads(analyzed.read_text(encoding="utf-8"))
+    chars = sum(len(p["text"]) for ch in doc["chapters"] for p in ch["paragraphs"])
+    real = "split" if chars > render_mod.SPLIT_AT_CHARS else "single"
+    target = src_dir if real == "split" else src_dir / "book.html"
+    render_mod.render_doc(doc, target, mode=real, marks=False)
+    _emit(progress, "阅读版已按复核结果更新")
+
+    return {
+        "asked": stats.get("asked", 0), "chars": stats.get("chars", 0),
+        "batches": stats.get("batches", 0), "reviewed": stats.get("reviewed", 0),
+        "failed": stats.get("failed", 0), "target": str(target),
+    }
+
+
 def doctor(src, out_dir, chapters=3, start_at=1) -> dict:
     """体检 + 前几章抽查页（引擎强制的确认步骤，整本 build 之前必须先过）。"""
     src, out_dir = Path(src), Path(out_dir)

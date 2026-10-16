@@ -29,12 +29,14 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,9 +46,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 
 /**
- * 主流程：选书 → 抽查判定 → 出整本 → 阅读 →（可选）导出 EPUB。
+ * 主流程：选书 → 抽查判定 → 出整本 → 阅读 →（可选）AI 复核 / 导出 EPUB。
  *
  * 判定这件事整个跑在手机本地（Chaquopy 把仓库里那份只读引擎塞进 APK），所以这里
  * 一条网都不用连。界面是个单 Activity 的状态机，四段手工阶段各有自己的界面：
@@ -54,7 +58,10 @@ import java.io.File
  *   Picker    还没选书
  *   Working  后台在跑（取书 / 体检 / 整本判定），带进度日志
  *   Confirming 抽查页出来等用户点头（引擎强制的步骤，确认了才出整本）
- *   Reading   阅读版 WebView（导出是在它上面压一层对话框，见 EpubStage）
+ *   Reading   阅读版 WebView（AI 复核与导出都压在它上面，见 AiStage / EpubStage）
+ *
+ * AI 复核是可选的第二条路：引擎仍是纯本地规则，只有用户自己填了接口地址与密钥，
+ * 才会把规则判不准的模糊带交给他的模型复核一遍，再按复核结果重渲。默认关闭。
  *
  * 产物一律落在 filesDir/book/ 下，不碰外部存储：SAF 给的是内容 URI，
  * 不用存储权限，取回来也只是我们自己看的副本。
@@ -68,6 +75,11 @@ class MainActivity : ComponentActivity() {
     private var exportOptions: EpubOptions by mutableStateOf(EpubOptions())
     // 按下「导出」那一刻定下的选项；SAF 的选路径界面回来后用它，避免面板又被改一遍。
     private var pendingExport: EpubOptions? = null
+
+    // AI 复核同样压在阅读页上；Off 是常态（默认不跑，纯规则）。设置是全局的，
+    // 选书页也要能打开，所以它的对话框挂在状态机外面。
+    private var aiStage: AiStage by mutableStateOf(AiStage.Off)
+    private var aiConfig: AiConfig by mutableStateOf(AiConfig())
 
     private val bookPicker =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -86,6 +98,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        aiConfig = loadAiConfig()
         setContent {
             MaterialTheme {
                 Surface(
@@ -93,20 +106,35 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background,
                 ) {
                     when (val s = stage) {
-                        is Stage.Picker -> PickerScreen(onPick = { bookPicker.launch(PICK_MIME) })
+                        is Stage.Picker -> PickerScreen(
+                            onPick = { bookPicker.launch(PICK_MIME) },
+                            onAiSettings = { openAiSettings() },
+                        )
                         is Stage.Working -> WorkingScreen(s)
                         is Stage.Confirming -> ConfirmScreen(
                             s, onRead = { startBuild() }, onBack = { reset() },
                         )
                         is Stage.Reading -> ReaderScreen(
-                            s, exportStage, exportOptions,
+                            s, exportStage, exportOptions, aiStage, aiConfig.ready,
                             onOptions = { exportOptions = it },
                             onOpenPanel = { openExport() },
                             onStart = { startExport() },
                             onCloseExport = { closeExport() },
+                            onAiReview = { startAiReview() },
+                            onAiSettings = { openAiSettings() },
+                            onCloseAi = { closeAi() },
                             onBack = { reset() },
                         )
                         is Stage.Failed -> FailScreen(s, onBack = { reset() })
+                    }
+                    // 设置在选书页和阅读页都要能开，所以挂在状态机外面。
+                    if (aiStage == AiStage.Settings) {
+                        AiSettingsDialog(
+                            aiConfig,
+                            onSave = { applyAiConfig(it); closeAi() },
+                            onTest = { cfg, report -> probeAi(cfg, report) },
+                            onDismiss = { closeAi() },
+                        )
                     }
                 }
             }
@@ -239,6 +267,145 @@ class MainActivity : ComponentActivity() {
         return base.replace(Regex("""[\\/:*?"<>|]"""), "_") + ".epub"
     }
 
+    // ---------- AI 复核：设置 -> 复核模糊带 -> 重渲 -> 阅读页刷新 ----------
+
+    private fun openAiSettings() = goToAi(AiStage.Settings)
+
+    private fun closeAi() = goToAi(AiStage.Off)
+
+    /** 设置改动落 SharedPreferences：密钥只进 App 私有目录，不写产物、不进日志。 */
+    private fun applyAiConfig(cfg: AiConfig) {
+        aiConfig = cfg
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString("endpoint", cfg.endpoint)
+            .putString("model", cfg.model)
+            .putString("key", cfg.key)
+            .apply()
+    }
+
+    private fun loadAiConfig(): AiConfig {
+        val p = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val d = AiConfig()
+        return AiConfig(
+            endpoint = p.getString("endpoint", null) ?: d.endpoint,
+            model = p.getString("model", null) ?: d.model,
+            key = p.getString("key", "").orEmpty(),
+        )
+    }
+
+    private fun probeAi(cfg: AiConfig, report: (String) -> Unit) {
+        Thread {
+            val msg = try {
+                val info = asStringMap(
+                    Python.getInstance().getModule("runner")
+                        .callAttr("ai_probe", cfg.endpoint, cfg.model, cfg.key),
+                )
+                info["message"]?.toString().orEmpty()
+            } catch (e: Throwable) {
+                "测试失败：${e.message ?: e.toString()}"
+            }
+            runOnUiThread { report(msg) }
+        }.start()
+    }
+
+    /**
+     * 复核只碰模糊带：改的是 out/analyzed.json，再按 build 的同一套模式重渲阅读版。
+     * 重渲写的是同一个文件名，所以读完要让 WebView 重载（版本号 +1，见 HtmlPane）。
+     */
+    private fun startAiReview() {
+        val out = File(bookDir(), "out")
+        if (!aiConfig.ready) { openAiSettings(); return }
+        if (!File(out, "analyzed.json").isFile) {
+            goToAi(AiStage.Fail("判定结果不在了，先读一遍整本再复核。"))
+            return
+        }
+        val cfg = aiConfig
+        val prog = File(out, "progress.json").apply { delete() }
+        goToAi(AiStage.Running("复核模糊带…", 0, 0, 0, 0))
+        Thread {
+            // 复核跑在这条线程上，进度只能靠轮询 progress.json —— Python 那一层边跑边写它。
+            val stop = AtomicBoolean(false)
+            val poller = Thread {
+                while (!stop.get()) {
+                    readAiProgress(prog)?.let { p -> runOnUiThread { mergeAiProgress(p) } }
+                    try {
+                        Thread.sleep(400)
+                    } catch (_: InterruptedException) {
+                        stop.set(true)
+                    }
+                }
+            }
+            poller.start()
+            try {
+                val runner = Python.getInstance().getModule("runner")
+                val bridge = ProgressBridge { msg -> runOnUiThread { mergeAiStep(msg) } }
+                val info = asStringMap(
+                    runner.callAttr(
+                        "ai_review", out.absolutePath, cfg.endpoint, cfg.model, cfg.key,
+                        AI_LO, AI_HI, AI_MAX, AI_BATCH, prog.absolutePath, bridge,
+                    ),
+                )
+                stop.set(true)
+                poller.join(1000)
+                refreshReader(out)
+                goToAi(AiStage.Done(describeAi(info)))
+            } catch (e: Throwable) {
+                stop.set(true)
+                Log.e(TAG, "AI 复核失败", e)
+                goToAi(AiStage.Fail("AI 复核失败：\n${e.message ?: e.toString()}"))
+            }
+        }.start()
+    }
+
+    /** 复核改了 analyzed.json，重渲出来的是同一个文件，给阅读页换个版本号逼 WebView 重载。 */
+    private fun refreshReader(out: File) {
+        val reader = listOf(File(out, "index.html"), File(out, "book.html"))
+            .firstOrNull { it.isFile } ?: return
+        runOnUiThread {
+            val cur = stage
+            if (cur is Stage.Reading) {
+                stage = cur.copy(html = reader, version = cur.version + 1)
+            }
+        }
+    }
+
+    private fun readAiProgress(f: File): AiStage.Running? = try {
+        val o = JSONObject(f.readText())
+        AiStage.Running("", o.optInt("done"), o.optInt("total"),
+            o.optInt("reviewed"), o.optInt("failed"))
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** 进度文件只有计数，界面上的那句话由 Python 侧的进度回调给，别互相盖掉。 */
+    private fun mergeAiProgress(p: AiStage.Running) {
+        val cur = aiStage
+        if (cur is AiStage.Running) aiStage = p.copy(step = cur.step)
+    }
+
+    private fun mergeAiStep(msg: String) {
+        val cur = aiStage
+        if (cur is AiStage.Running) aiStage = cur.copy(step = msg)
+    }
+
+    private fun describeAi(info: Map<String, PyObject>): String {
+        val asked = info["asked"]?.toString() ?: "0"
+        val reviewed = info["reviewed"]?.toString() ?: "0"
+        val failed = info["failed"]?.toString() ?: "0"
+        val note = info["note"]?.toString().orEmpty()
+        return buildString {
+            if (asked == "0") {
+                append("模糊带里没有段落，规则判定原样通过。")
+            } else {
+                append("模糊带挑出 ").append(asked).append(" 段，改用模型判定 ")
+                append(reviewed).append(" 段")
+                if (failed != "0") append("（").append(failed).append(" 批失败，保留规则判定）")
+            }
+            if (note.isNotBlank()) append("\n").append(note)
+            append("\n阅读版与导出都会用复核后的判定。")
+        }
+    }
+
     // ---------- 杂项 ----------
 
     private fun bookDir() = File(filesDir, "book")
@@ -277,8 +444,11 @@ class MainActivity : ComponentActivity() {
 
     private fun goToExport(s: EpubStage) = runOnUiThread { exportStage = s }
 
+    private fun goToAi(s: AiStage) = runOnUiThread { aiStage = s }
+
     private fun reset() {
         goToExport(EpubStage.Off)
+        goToAi(AiStage.Off)
         goTo(Stage.Picker)
     }
 
@@ -291,6 +461,15 @@ class MainActivity : ComponentActivity() {
         const val TAG = "qianshen"
         // .txt 的 MIME 各家报得不一致，octet-stream 也得放进来，否则选不到书。
         val PICK_MIME = arrayOf("text/plain", "application/octet-stream")
+
+        // AI 接入点存这儿；密钥只在这份 App 私有存储里，不进产物、不进日志。
+        const val PREFS = "ai"
+
+        // 模糊带与批量：与桌面版 ai_layer 的默认值一致，改判定口径只在引擎/那一层改。
+        const val AI_LO = 0.30
+        const val AI_HI = 0.70
+        const val AI_MAX = 400
+        const val AI_BATCH = 16
     }
 }
 
@@ -307,7 +486,8 @@ sealed interface Stage {
     data object Picker : Stage
     data class Working(val step: String, val logs: List<String>) : Stage
     data class Confirming(val html: File, val summary: String) : Stage
-    data class Reading(val html: File, val title: String) : Stage
+    // version 只在 AI 复核重渲后 +1：重渲写的是同一个文件，靠它把 WebView 逼着重载一次。
+    data class Reading(val html: File, val title: String, val version: Int = 0) : Stage
     data class Failed(val message: String) : Stage
 }
 
@@ -338,6 +518,32 @@ sealed interface EpubStage {
     data class Fail(val message: String) : EpubStage
 }
 
+/**
+ * AI 复核在界面上的几个态。Off 是常态——默认纯规则出书，一条网都不连；
+ * 只有用户自己配了地址/模型/密钥，才会有 Running 这一段。问句（done/total）来自
+ * Python 侧写的 progress.json，界面每 400ms 读一次。
+ */
+sealed interface AiStage {
+    data object Off : AiStage
+    data object Settings : AiStage
+    data class Running(val step: String, val done: Int, val total: Int,
+                       val reviewed: Int, val failed: Int) : AiStage
+    data class Done(val message: String) : AiStage
+    data class Fail(val message: String) : AiStage
+}
+
+/**
+ * 用户自己那套模型接入点。端点按 OpenAI 兼容的 /chat/completions 约定，默认取官方地址；
+ * 密钥只存 App 私有 SharedPreferences，不进产物、不进日志。
+ */
+data class AiConfig(
+    val endpoint: String = "https://api.openai.com/v1",
+    val model: String = "gpt-4o-mini",
+    val key: String = "",
+) {
+    val ready: Boolean get() = key.isNotBlank()
+}
+
 private val PRESET_CHOICES = listOf(
     "original" to "原始", "balance" to "平衡", "plotonly" to "只看剧情",
 )
@@ -355,7 +561,7 @@ private fun asStringMap(o: PyObject): Map<String, PyObject> =
 // ---------- 界面 ----------
 
 @Composable
-private fun PickerScreen(onPick: () -> Unit) {
+private fun PickerScreen(onPick: () -> Unit, onAiSettings: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(28.dp),
         verticalArrangement = Arrangement.Center,
@@ -368,6 +574,9 @@ private fun PickerScreen(onPick: () -> Unit) {
         Button(onClick = onPick, modifier = Modifier.fillMaxWidth()) { Text("选择 TXT 书") }
         Spacer(Modifier.height(12.dp))
         Text("选书后先抽查前 3 章给你确认判定，再出整本。", fontSize = 13.sp)
+        Spacer(Modifier.height(20.dp))
+        // 复核是可选的一层，默认不跑；入口放在这儿，也放在阅读页顶栏。
+        TextButton(onClick = onAiSettings) { Text("AI 复核设置（可选）", fontSize = 13.sp) }
     }
 }
 
@@ -404,7 +613,7 @@ private fun ConfirmScreen(s: Stage.Confirming, onRead: () -> Unit, onBack: () ->
                 OutlinedButton(onClick = onBack) { Text("重选") }
             }
         }
-        HtmlPane(s.html, Modifier.fillMaxWidth().weight(1f))
+        HtmlPane(s.html, 0, Modifier.fillMaxWidth().weight(1f))
     }
 }
 
@@ -413,36 +622,63 @@ private fun ReaderScreen(
     s: Stage.Reading,
     export: EpubStage,
     options: EpubOptions,
+    ai: AiStage,
+    aiReady: Boolean,
     onOptions: (EpubOptions) -> Unit,
     onOpenPanel: () -> Unit,
     onStart: () -> Unit,
     onCloseExport: () -> Unit,
+    onAiReview: () -> Unit,
+    onAiSettings: () -> Unit,
+    onCloseAi: () -> Unit,
     onBack: () -> Unit,
 ) {
-    // 导出对话框开着时，返回键先关对话框，别直接把书丢了。
-    BackHandler { if (export == EpubStage.Off) onBack() else onCloseExport() }
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                s.title, fontSize = 15.sp, maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
-            OutlinedButton(onClick = onOpenPanel) { Text("导出 EPUB") }
-            Spacer(Modifier.width(8.dp))
-            OutlinedButton(onClick = onBack) { Text("选书") }
+    // 有对话框压着时，返回键先关对话框，别直接把书丢了。
+    BackHandler {
+        when {
+            export != EpubStage.Off -> onCloseExport()
+            ai != AiStage.Off -> onCloseAi()
+            else -> onBack()
         }
-        HtmlPane(s.html, Modifier.fillMaxWidth().weight(1f))
+    }
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    s.title, fontSize = 15.sp, maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onAiSettings) { Text("AI 设置", fontSize = 13.sp) }
+                Spacer(Modifier.width(4.dp))
+                OutlinedButton(onClick = onBack) { Text("选书") }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row {
+                OutlinedButton(onClick = onAiReview, modifier = Modifier.weight(1f)) {
+                    Text(if (aiReady) "AI 复核" else "AI 复核（未配置）", fontSize = 13.sp)
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = onOpenPanel, modifier = Modifier.weight(1f)) {
+                    Text("导出 EPUB", fontSize = 13.sp)
+                }
+            }
+        }
+        HtmlPane(s.html, s.version, Modifier.fillMaxWidth().weight(1f))
     }
 
     when (export) {
         is EpubStage.Panel -> ExportPanelDialog(options, onOptions, onStart, onCloseExport)
-        is EpubStage.Running -> ExportProgressDialog(export.step)
+        is EpubStage.Running -> BusyDialog("导出 EPUB", export.step)
         is EpubStage.Done -> ExportMessageDialog("导出完成", export.message, onCloseExport)
         is EpubStage.Fail -> ExportMessageDialog("导出失败", export.message, onCloseExport)
         EpubStage.Off -> Unit
+    }
+
+    when (ai) {
+        is AiStage.Running -> AiProgressDialog(ai)
+        is AiStage.Done -> ExportMessageDialog("AI 复核完成", ai.message, onCloseAi)
+        is AiStage.Fail -> ExportMessageDialog("AI 复核失败", ai.message, onCloseAi)
+        AiStage.Off, AiStage.Settings -> Unit
     }
 }
 
@@ -496,11 +732,11 @@ private fun ExportPanelDialog(
 }
 
 @Composable
-private fun ExportProgressDialog(step: String) {
+private fun BusyDialog(title: String, step: String) {
     AlertDialog(
-        // 打包中不让点掉：这是本地几秒的事，中途撒手只会留下半截文件。
+        // 跑着的时候不让点掉：这几步中途撒手只会留下半截结果。
         onDismissRequest = {},
-        title = { Text("导出 EPUB") },
+        title = { Text(title) },
         text = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -509,6 +745,108 @@ private fun ExportProgressDialog(step: String) {
             }
         },
         confirmButton = {},
+    )
+}
+
+/** 复核进度：总批数来自 Python 侧写的 progress.json，没写出来（还没开始）就先只显示那句话。 */
+@Composable
+private fun AiProgressDialog(ai: AiStage.Running) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("AI 复核") },
+        text = {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text(ai.step.ifBlank { "复核中…" }, fontSize = 14.sp)
+                }
+                if (ai.total > 0) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("批次 ${ai.done}/${ai.total}", fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "已改判 ${ai.reviewed} 段" +
+                        if (ai.failed > 0) " · 失败 ${ai.failed} 批（保留规则判定）" else "",
+                    fontSize = 13.sp,
+                )
+            }
+        },
+        confirmButton = {},
+    )
+}
+
+/**
+ * AI 接入点设置。默认值就是"不跑"：密钥留空则一切都还在本地。
+ * 地址按 OpenAI 兼容约定（服务端会拼 /chat/completions），测试连接不碰任何文件。
+ */
+@Composable
+private fun AiSettingsDialog(
+    config: AiConfig,
+    onSave: (AiConfig) -> Unit,
+    onTest: (AiConfig, (String) -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var endpoint by remember { mutableStateOf(config.endpoint) }
+    var model by remember { mutableStateOf(config.model) }
+    var key by remember { mutableStateOf(config.key) }
+    var testing by remember { mutableStateOf(false) }
+    var testMsg by remember { mutableStateOf("") }
+    val edited = AiConfig(endpoint.trim(), model.trim(), key.trim())
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("AI 复核设置") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "可选的一层，默认关闭：判定仍全在手机本地跑。填上你自己模型的地址与密钥后，" +
+                        "才会把规则判不准的模糊带交给它复核一遍。密钥只存在本机 App 私有目录，" +
+                        "不进产物、不进日志。",
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = endpoint, onValueChange = { endpoint = it },
+                    label = { Text("接口地址（填到 /v1 这一层）", fontSize = 12.sp) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = model, onValueChange = { model = it },
+                    label = { Text("模型名", fontSize = 12.sp) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = key, onValueChange = { key = it },
+                    label = { Text("密钥（留空=不跑复核）", fontSize = 12.sp) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        enabled = !testing && edited.key.isNotBlank(),
+                        onClick = {
+                            testing = true
+                            testMsg = "正在测试…"
+                            onTest(edited) { testing = false; testMsg = it }
+                        },
+                    ) { Text("测试连接") }
+                    if (testing) {
+                        Spacer(Modifier.width(10.dp))
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    }
+                }
+                if (testMsg.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(testMsg, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = { Button(onClick = { onSave(edited) }) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
@@ -566,8 +904,10 @@ private fun FailScreen(s: Stage.Failed, onBack: () -> Unit) {
 
 /** 引擎渲染出的自包含 HTML 直接喂给 WebView。分章版的章间跳转是普通文件链接，不用放行跨源。 */
 @Composable
-private fun HtmlPane(file: File, modifier: Modifier) {
+private fun HtmlPane(file: File, version: Int, modifier: Modifier) {
     val url = "file://" + file.absolutePath
+    // 同一个文件重渲后 tag 也得变，不然这里认不出是新版、WebView 还停在旧判定上。
+    val stamp = "$url#$version"
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
@@ -576,14 +916,14 @@ private fun HtmlPane(file: File, modifier: Modifier) {
                 settings.allowFileAccess = true
                 settings.domStorageEnabled = true
                 webViewClient = WebViewClient()
-                tag = url
+                tag = stamp
                 loadUrl(url)
             }
         },
         // 重组成对同一个文件不该重载——阅读时翻章是 WebView 自己的事，一重载就弹回目录。
         update = { wv ->
-            if (wv.tag != url) {
-                wv.tag = url
+            if (wv.tag != stamp) {
+                wv.tag = stamp
                 wv.loadUrl(url)
             }
         },
