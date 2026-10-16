@@ -79,6 +79,9 @@ git commit -am "说明"
 git push
 ```
 
+提交身份设成了**仓库级**（写在 `.git/config`，只对这份检出生效，不进仓库也不提交），
+所以 `git commit` 不用再传 `-c user.name=… -c user.email=…`。
+
 本机 **`github.com:443`（HTTPS）连不通**，别把 remote 换回 `https://` 地址。
 
 一条踩过的坑：**不要**用 GitHub REST 的 git-data 接口（`POST /git/commits`）造提交来推送。
