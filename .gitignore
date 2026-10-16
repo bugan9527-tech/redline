@@ -7,3 +7,9 @@ __pycache__/
 
 # 本地日志
 server.log
+
+# 设计期的检查留痕（截图 + JSON），不属于运行项目
+.taste-skill/
+
+# 没有任何页面引用的素材索引
+assets/credits.json

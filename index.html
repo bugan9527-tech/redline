@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>深浅 · 把网文读成深浅</title>
-<meta name="description" content="放一本中文网文 TXT 进去，逐段判读：情节压深，注水退浅。深浅由你调，原文一个字不改，输出 EPUB / PDF / HTML。">
+<meta name="description" content="放一本中文网文 TXT 或 EPUB 进去，逐段判读：情节压深，注水退浅。深浅由你调，原文一个字不改，输出 EPUB / HTML。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preconnect" href="https://api.fontshare.com">
@@ -348,7 +348,7 @@ button{font:inherit;color:inherit}
   </header>
 
   <p class="hero-line"><span class="mask"><span class="mask-i">把重要的情节，</span></span><br><span class="mask"><span class="mask-i">读得更深。</span></span></p>
-  <p class="hero-sub">放一本中文网文 TXT 进去。它逐段读完，把情节压深、把注水退浅，深度由你调。原文一个字不改。</p>
+  <p class="hero-sub">放一本中文网文 TXT 或 EPUB 进去。它逐段读完，把情节压深、把注水退浅，深度由你调。原文一个字不改。</p>
   <button class="btn hero-cta" type="button" data-app>进入工作台</button>
 </section>
 
@@ -512,12 +512,12 @@ button{font:inherit;color:inherit}
         <p class="group-name">处理</p>
         <div class="items">
           <div class="item">
-            <div class="item-row"><span class="item-name">输入格式</span><span class="leader"></span><span class="item-val">TXT</span></div>
-            <p class="item-desc">TXT 直接读。EPUB / PDF 要先抽出文本，这层还在做。</p>
+            <div class="item-row"><span class="item-name">输入格式</span><span class="leader"></span><span class="item-val">TXT ／ EPUB</span></div>
+            <p class="item-desc">TXT 和 EPUB 都直接读。PDF 要先抽出文本，这层还没做。</p>
           </div>
           <div class="item">
-            <div class="item-row"><span class="item-name">输出格式</span><span class="leader"></span><span class="item-val">EPUB ／ PDF ／ HTML</span></div>
-            <p class="item-desc">EPUB 和 PDF 交给你的阅读器；网页版双击就能看。</p>
+            <div class="item-row"><span class="item-name">输出格式</span><span class="leader"></span><span class="item-val">EPUB ／ HTML</span></div>
+            <p class="item-desc">EPUB 交给你的阅读器；网页版双击就能看。</p>
           </div>
           <div class="item">
             <div class="item-row"><span class="item-name">分层</span><span class="leader"></span><span class="item-val">五层</span></div>
@@ -579,8 +579,8 @@ button{font:inherit;color:inherit}
     <h2 class="faq-h reveal">你可能想问的</h2>
     <div class="faq-list">
       <details class="q reveal">
-        <summary>我的 TXT 能直接处理吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
-        <p class="q-a">能。TXT 直接读进来。EPUB 和 PDF 要先抽成文本再处理，这一层还在做，做好了会同步上线。</p>
+        <summary>手上的 TXT、EPUB 能直接处理吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
+        <p class="q-a">能。TXT 和 EPUB 都直接读进来。PDF 要先抽成文本再处理，这一层还没做。</p>
       </details>
       <details class="q reveal">
         <summary>它会改写我的小说吗？<svg class="chev" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7l6 6 6-6"/></svg></summary>
@@ -616,7 +616,7 @@ button{font:inherit;color:inherit}
 <!-- ============ 6. cta ============ -->
 <section class="cta" id="cta">
   <button class="band-btn" type="button" data-app>
-    <span class="band-say">TXT 放进去，EPUB 和 PDF 拿出来。原文一个字不改。</span>
+    <span class="band-say">TXT 或 EPUB 放进去，EPUB 和网页版拿出来。原文一个字不改。</span>
     <svg class="band-arrow" viewBox="0 0 48 48" aria-hidden="true"><path d="M14 34L34 14M34 14H18M34 14v16"/></svg>
     <span class="band-word">深浅</span>
   </button>

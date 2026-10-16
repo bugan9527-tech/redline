@@ -16,12 +16,13 @@
     GET  /read                      阅读器
     POST /api/upload                body = TXT / EPUB 字节；header x-filename；返回 job + 抽查页
     POST /api/build                 {job, ai:{on,endpoint,model,key,lo,hi,max}}  后台跑
-    POST /api/export                {job, format, preset, lever}
+    POST /api/export                {job, preset, lever}  打包 EPUB（后台跑）
+    POST /api/job-delete            {job}  删掉这本书的整个工作目录
     POST /api/ai-test               {endpoint, model, key}  测一次连接能不能用
     POST /api/read                  body = TXT/EPUB 字节；header x-filename；返回分好章的正文
     GET  /api/state?job=            进度与产物
     GET  /api/skill-rules           AI 复核实际使用的判定标准（只读自 skill）
-    GET  /work/<job>/...            抽查页 / 阅读版 / EPUB·PDF 下载
+    GET  /work/<job>/...            抽查页 / 阅读版 / EPUB 下载
     GET  /assets/...                落地页图片
 """
 
@@ -47,7 +48,7 @@ WORK = E.WORK
 UI = Path(__file__).resolve().parent / "ui.html"
 READER = Path(__file__).resolve().parent / "reader.html"
 MAX_UPLOAD = 80 * 1024 * 1024          # 一本书不该超过 80 MB
-SERVE_EXT = {".html", ".txt", ".json", ".epub", ".pdf", ".jpg", ".jpeg", ".png", ".css", ".js"}
+SERVE_EXT = {".html", ".txt", ".json", ".epub", ".jpg", ".jpeg", ".png", ".css", ".js"}
 
 STATE: dict[str, dict] = {}
 LOCK = threading.Lock()
@@ -147,14 +148,14 @@ def task_build(job: str, ai: dict) -> None:
         set_state(job, phase="error", done=True, error=str(exc))
 
 
-def task_export(job: str, fmt: str, preset: str, lever: str) -> None:
+def task_export(job: str, preset: str, lever: str) -> None:
     try:
         d = job_dir(job)
         set_state(job, phase="export", error=None)
-        ok, log, target = E.export(d, fmt=fmt, preset=preset, lever=lever)
+        ok, log, target = E.export(d, preset=preset, lever=lever)
         log_line(job, log)
         if not ok or not target.exists():
-            raise RuntimeError(f"{fmt.upper()} 导出失败，看日志。")
+            raise RuntimeError("EPUB 打包失败，看日志里的最后几行。")
         set_state(job, phase="ready", result=E.result_of(d))
     except Exception as exc:  # noqa: BLE001
         log_line(job, f"[error] {exc}")
@@ -305,7 +306,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     return self.fail(400, f"这个 EPUB 读不出来：{exc}")
             else:
-                return self.fail(400, "只吃 TXT 和 EPUB。PDF 要先抽成文本，这层还在做。")
+                return self.fail(400, "只吃 TXT 和 EPUB。PDF 要先抽成文本，这层还没做。")
             job, d = E.new_job(name)
             src = E.save_source(d, name, data)
             set_state(job, phase="doctor", done=False, error=None)
@@ -358,13 +359,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if STATE.get(job, {}).get("phase") in ("build", "ai", "render", "export"):
                 return self.fail(409, "已经在跑了")
-            fmt = body.get("format") or "epub"
-            if fmt not in ("epub", "pdf"):
-                return self.fail(400, "只支持 epub / pdf")
             threading.Thread(target=task_export,
-                             args=(job, fmt, body.get("preset") or "balance",
+                             args=(job, body.get("preset") or "balance",
                                    body.get("lever") or "color"), daemon=True).start()
             return self.send_json({"job": job, "phase": "export", "started": True})
+
+        if path == "/api/job-delete":
+            body = self.read_json()
+            job = body.get("job") or ""
+            d = self.job_path(job)
+            if d is None:
+                return
+            if STATE.get(job, {}).get("phase") in ("build", "ai", "render", "export"):
+                return self.fail(409, "这本书还在跑，等它停下来再删。")
+            try:
+                E.remove_job(d)
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(500, f"删不掉：{exc}")
+            with LOCK:
+                STATE.pop(job, None)
+            return self.send_json({"ok": True, "job": job, "jobs": list_jobs()})
 
         return self.fail(404, "没有这个地址")
 

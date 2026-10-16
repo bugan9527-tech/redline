@@ -55,6 +55,10 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 .pill{display:inline-block;background:var(--bg);padding:6px 12px;font-size:15px;margin:0 8px 8px 0}
 .links{display:grid;gap:10px;margin-top:18px}
 .links a{font-size:17px;text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:2px}
+.jobrow{display:flex;align-items:baseline;justify-content:space-between;gap:16px}
+.jobdel{flex:0 0 auto;background:transparent;border:0;padding:2px 0;font-size:14px;color:var(--muted);
+  cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.jobdel:hover{color:var(--ink)}
 .frame{width:100%;height:520px;background:var(--bg);margin-top:20px}
 .status{font-size:15px;color:var(--muted);margin-top:12px}
 .err{color:#8a1c0f}
@@ -75,13 +79,13 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     <nav><a href="/">回到首页</a><a href="/read">阅读器</a><a href="/api/health" target="_blank">引擎状态</a></nav>
   </header>
 
-  <h1>放一本 TXT 进来，读成深浅。</h1>
+  <h1>放一本 TXT 或 EPUB 进来，读成深浅。</h1>
   <p class="sub">第一步先体检 + 抽查前几章，判定合理再出整本。整条流水线都在这台机器上跑，产物落在 <code>work/</code>。</p>
 
   <div class="grid">
     <section class="card">
       <h2>一 · 选书</h2>
-      <p class="note">吃 TXT 和 EPUB。PDF 要先抽成文本，这层还在做。</p>
+      <p class="note">吃 TXT 和 EPUB。PDF 要先抽成文本，这层还没做。</p>
       <button class="drop" id="drop" type="button">
         <b id="dropName">点这里选一个 TXT 或 EPUB</b>
         <span id="dropMeta">或者把文件拖到这块上面</span>
@@ -158,23 +162,23 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 
     <section class="card">
       <h2>四 · 拿走</h2>
-      <p class="note">EPUB / PDF 交给你的阅读器看；网页版双击就能读。三档强度不用重跑，EPUB 导出时选一次即可。</p>
+      <p class="note">EPUB 交给你的阅读器看；网页版双击就能读。三档强度不用重跑，导出时选一次即可。</p>
       <div class="row">
         <button class="btn btn-sm" id="epub" type="button" disabled>导出 EPUB</button>
-        <button class="btn btn-sm btn-quiet" id="pdf" type="button" disabled>导出 PDF</button>
         <select id="preset" class="btn-sm" style="background:var(--bg);border:0;padding:10px 12px">
           <option value="balance">平衡</option>
           <option value="original">原汁原味</option>
           <option value="plotonly">只看剧情</option>
         </select>
       </div>
+      <div class="status" id="expoMsg"></div>
       <div class="tiers-line" id="tiers"></div>
       <div class="links" id="links"></div>
     </section>
 
     <section class="card">
       <h2>五 · 以前的书</h2>
-      <p class="note">这台机器上做过的书，新的在最前面。点一本接着用：没出整本的继续跑，出好的直接下载。</p>
+      <p class="note">这台机器上做过的书，新的在最前面。点一本接着用：没出整本的继续跑，出好的直接下载。不要了就在右边删掉。</p>
       <div class="links" id="jobs"></div>
     </section>
   </div>
@@ -182,7 +186,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 
 <script>
 (function () {
-  var job = null, timer = null, polling = false, beganAt = 0, resuming = false;
+  var job = null, timer = null, polling = false, beganAt = 0, resuming = false, exporting = false;
   var $ = function (id) { return document.getElementById(id); };
   var NET_TIP = '连不上本地服务：先确认「启动.bat」那个窗口还开着，地址栏是 http://127.0.0.1:8765/app，按 Ctrl+F5 刷新后再试。';
 
@@ -290,7 +294,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   function build(skipConfirm) {
     if (!job) return;
     beganAt = Date.now() / 1000;
-    $('build').disabled = true; $('goBuild').disabled = true; $('epub').disabled = true; $('pdf').disabled = true;
+    $('build').disabled = true; $('goBuild').disabled = true; $('epub').disabled = true;
     var ai = {
       on: $('aiOn').checked,
       endpoint: $('endpoint').value.trim(),
@@ -307,17 +311,28 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   $('goBuild').addEventListener('click', function () { build(); });
   $('build').addEventListener('click', function () { build(); });
 
-  // ---------- 导出 ----------
-  function expo(fmt) {
+  // ---------- 导出 EPUB ----------
+  function expo() {
     if (!job) return;
+    exporting = true;
+    $('expoMsg').textContent = '正在打包 EPUB…';
+    $('expoMsg').className = 'status';
     fetch('/api/export', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ job: job, format: fmt, preset: $('preset').value }) })
+      body: JSON.stringify({ job: job, preset: $('preset').value }) })
       .then(function (r) { return r.json(); })
-      .then(function (j) { if (j.error) { $('log').textContent += '\n' + j.error; } })
-      .catch(function () { $('log').textContent += '\n' + NET_TIP; });
+      .then(function (j) {
+        if (!j.error) return;
+        exporting = false;
+        $('expoMsg').textContent = '打包起不来：' + j.error;
+        $('expoMsg').className = 'status err';
+      })
+      .catch(function () {
+        exporting = false;
+        $('expoMsg').textContent = NET_TIP;
+        $('expoMsg').className = 'status err';
+      });
   }
-  $('epub').addEventListener('click', function () { expo('epub'); });
-  $('pdf').addEventListener('click', function () { expo('pdf'); });
+  $('epub').addEventListener('click', expo);
 
   // ---------- 轮询 ----------
   var BUSY = ['build', 'ai', 'render', 'export'];
@@ -382,7 +397,6 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
         var busy = BUSY.indexOf(s.phase) >= 0;
         $('build').disabled = busy || !job;
         $('epub').disabled = busy || !job;
-        $('pdf').disabled = busy || !job;
         paintProgress(s);
         // 恢复上次任务时，把抽查框也亮出来
         if (s.result && s.result.confirm && $('confirmBox').hidden) {
@@ -390,7 +404,14 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
           $('confirmFrame').src = s.result.confirm;
           $('confirmBox').hidden = false;
         }
-        if (s.phase === 'ready' && s.result) show(s.result);
+        if (s.phase === 'ready' && s.result) {
+          show(s.result);
+          if (exporting) { exporting = false; $('expoMsg').textContent = '打包好了，下载链接在下面。'; }
+        } else if (s.phase === 'error' && exporting) {
+          exporting = false;
+          $('expoMsg').textContent = '打包没成功：' + (s.error || '看左边那块日志。');
+          $('expoMsg').className = 'status err';
+        }
       })
       .catch(function () {});
   }
@@ -421,9 +442,22 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     job = which;
     store.set('job', job);
     resuming = true;
+    exporting = false;
     $('log').textContent = '（还没有开始）';
     $('links').innerHTML = '';
+    $('expoMsg').textContent = '';
+    $('expoMsg').className = 'status';
     startPolling();
+  }
+
+  function forget() {
+    job = null; store.set('job', null);
+    clearInterval(timer); polling = false; exporting = false;
+    $('phase').textContent = '待命中';
+    $('build').disabled = true; $('epub').disabled = true;
+    $('tiers').textContent = ''; $('links').innerHTML = '';
+    $('expoMsg').textContent = ''; $('expoMsg').className = 'status';
+    $('confirmBox').hidden = true;
   }
 
   function loadJobs() {
@@ -431,13 +465,32 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
       var list = (j && j.jobs) || [];
       if (!list.length) { $('jobs').innerHTML = '<span class="status">还没有做过书。</span>'; return; }
       $('jobs').innerHTML = list.map(function (it) {
-        return '<a href="#" data-job="' + esc(it.job) + '">' + esc(it.name) +
-               '（' + (JOB_PHASE[it.phase] || it.phase) + '）</a>';
+        return '<div class="jobrow">' +
+                 '<a href="#" data-job="' + esc(it.job) + '">' + esc(it.name) +
+                 '（' + (JOB_PHASE[it.phase] || it.phase) + '）</a>' +
+                 '<button class="jobdel" type="button" data-del="' + esc(it.job) +
+                 '" data-name="' + esc(it.name) + '">删掉</button>' +
+               '</div>';
       }).join('');
       [].forEach.call($('jobs').querySelectorAll('[data-job]'), function (a) {
         a.addEventListener('click', function (e) {
           e.preventDefault();
           resume(a.getAttribute('data-job'));
+        });
+      });
+      [].forEach.call($('jobs').querySelectorAll('[data-del]'), function (b) {
+        b.addEventListener('click', function () {
+          var which = b.getAttribute('data-del'), who = b.getAttribute('data-name');
+          if (!confirm('删掉《' + who + '》的整份工作目录？源文件、抽查页和产物会一起没，删了拿不回来。')) return;
+          fetch('/api/job-delete', { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ job: which }) })
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+              if (res.error) { $('status1').textContent = '删不掉：' + res.error; return; }
+              if (which === job) { forget(); $('status1').textContent = '这本书删掉了，重新选一本吧。'; }
+              loadJobs();
+            })
+            .catch(function () { $('status1').textContent = NET_TIP; });
         });
       });
     }).catch(function () {});

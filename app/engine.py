@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -51,6 +52,11 @@ def new_job(original_name: str) -> tuple[str, Path]:
     meta = {"job": jid, "name": safe_stem(original_name), "created": time.time()}
     (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     return jid, d
+
+
+def remove_job(d: Path) -> None:
+    """删掉这本书的整个工作目录：源文件、抽查页、产物、日志全在里面。"""
+    shutil.rmtree(d)
 
 
 def safe_stem(name: str) -> str:
@@ -114,18 +120,12 @@ def render(d: Path) -> tuple[bool, str]:
                  "--mode", "auto"], 1800)
 
 
-def export(d: Path, fmt: str = "epub", preset: str = "balance", keeps: list[str] | None = None,
-           lever: str = "color", per_file: int = 0, page_size: str = "A5") -> tuple[bool, str, Path]:
+def export(d: Path, preset: str = "balance", lever: str = "color") -> tuple[bool, str, Path]:
+    """只出 EPUB。PDF 那一层要靠本机浏览器无头打印，大书会把进程拖死，已经去掉。"""
     out = out_of(d)
-    target = out / f"{read_meta(d)['name']}.{fmt}"
-    args = [str(RUN_PY), "export", str(out / "analyzed.json"), "--format", fmt,
-            "--preset", preset, "-o", str(target)]
-    if keeps:
-        args += ["--keep", ",".join(keeps)]
-    if fmt == "epub":
-        args += ["--lever", lever]
-    else:
-        args += ["--chapters-per-file", str(per_file), "--page-size", page_size]
+    target = out / f"{read_meta(d)['name']}.epub"
+    args = [str(RUN_PY), "export", str(out / "analyzed.json"), "--format", "epub",
+            "--preset", preset, "--lever", lever, "-o", str(target)]
     ok, log = _run(args, 1800)
     return ok, log, target
 
@@ -205,8 +205,10 @@ def result_of(d: Path) -> dict:
     meta = read_meta(d)
     reader = reader_of(d)
     files = []
-    for f in sorted(out.glob("*")):
-        if f.is_file() and f.suffix.lower() in (".epub", ".pdf", ".html"):
+    # 只收搬得走的成品。out/ 里还躺着引擎渲染的几百上千个 chXXXX.html 分片，
+    # 它们是阅读版的零件、不是给你下载的东西，收进来会把页面撑爆。
+    for f in sorted(out.glob("*.epub")):
+        if f.is_file():
             files.append({"name": f.name, "url": f"/work/{d.name}/out/{f.name}",
                           "kb": round(f.stat().st_size / 1024)})
     return {
