@@ -1,16 +1,35 @@
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.ListProperty
+import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import java.io.File
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("com.chaquo.python")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// 发布签名凭据放在 android/keystore.properties（已 gitignore，不进版本库）。
+// 没有这个文件时 release 照样出包、只是没有签名，方便没私钥的机器上照样能构建。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+
+// 引擎是全原生组件，ABI 必须声明在 defaultConfig 里（Chaquopy 只认这一处）。
+// 默认两种都带上：x86_64 喂模拟器、arm64-v8a 喂真机；
+// 出分发包时加 -Parm64Only，只留 arm64-v8a，体积能少一半。
+val appAbis = if (project.hasProperty("arm64Only")) {
+    listOf("arm64-v8a")
+} else {
+    listOf("arm64-v8a", "x86_64")
 }
 
 android {
@@ -24,15 +43,30 @@ android {
         versionCode = 1
         versionName = "0.2"
 
-        // 引擎是全原生组件，必须显式声明 ABI：arm64-v8a 给真机，x86_64 给模拟器。
+        // ABI 必须落在 defaultConfig：Chaquopy 只在 config 阶段读这一处。
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += appAbis
+        }
+    }
+
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 有凭据就上发布签名；没有就保持未签名，别把构建硬卡住。
+            if (keystorePropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -82,6 +116,10 @@ abstract class SyncPyNativeLibs : DefaultTask() {
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val pipDir: DirectoryProperty
 
+    // 这次构建实际在用的 ABI，决定 common/ 里的库要摊到哪些目录下。
+    @get:Input
+    abstract val abiNames: ListProperty<String>
+
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
 
@@ -89,15 +127,22 @@ abstract class SyncPyNativeLibs : DefaultTask() {
     fun sync() {
         val out = outputDir.get().asFile
         out.deleteRecursively()
-        // pip 产物按 ABI 分层：<variant>/<abi>/chaquopy/lib/*.so。
-        // 这里摊平成 jniLibs 认的 <abi>/<name>.so。
-        pipDir.get().asFile.listFiles { f: File -> f.isDirectory }.orEmpty().forEach { abiDir ->
-            val libs = abiDir.resolve("chaquopy").resolve("lib")
-            if (!libs.isDirectory) return@forEach
-            val dest = out.resolve(abiDir.name).apply { mkdirs() }
+        val root = pipDir.get().asFile
+
+        fun copyLibs(libs: File, abi: String) {
+            if (!libs.isDirectory) return
+            val dest = out.resolve(abi).apply { mkdirs() }
             libs.listFiles { f: File -> f.isFile && f.name.endsWith(".so") }.orEmpty().forEach {
                 it.copyTo(dest.resolve(it.name), overwrite = true)
             }
+        }
+
+        abiNames.get().forEach { abi ->
+            // 单 ABI 构建时 Chaquopy 把这些库统一落在 common/ 下；
+            // 多 ABI 时按 <abi>/ 分层。两处都摊成 jniLibs 认的 <abi>/<name>.so。
+            // 先 common 后 <abi>，同名时以该 ABI 自己的那份为准。
+            copyLibs(root.resolve("common").resolve("chaquopy").resolve("lib"), abi)
+            copyLibs(root.resolve(abi).resolve("chaquopy").resolve("lib"), abi)
         }
     }
 }
@@ -108,6 +153,7 @@ androidComponents {
         val syncLibs = tasks.register<SyncPyNativeLibs>("sync${cap}PyNativeLibs") {
             pipDir.set(layout.buildDirectory.dir("python/pip/${variant.name}"))
             outputDir.set(layout.buildDirectory.dir("generated/pyNativeLibs/${variant.name}"))
+            abiNames.set(appAbis)
             // pip 产物得先落盘；显式挂上，不指望 @InputDirectory 的推断。
             dependsOn(tasks.named("install${cap}PythonRequirements"))
         }

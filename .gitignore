@@ -20,3 +20,10 @@ android/.kotlin/
 android/**/build/
 android/.idea/
 android/local.properties
+
+# 发布签名凭据：含密钥库密码，绝不入库
+android/keystore.properties
+android/keystore/
+
+# 分发包：APK 不进版本库，走 GitHub Release 挂附件
+dist/
