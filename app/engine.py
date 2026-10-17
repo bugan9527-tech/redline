@@ -31,7 +31,7 @@ _CHAPTER_TITLE = re.compile(
     r"(?:第[0-9零一二三四五六七八九十百千万两]+[章节回卷篇部]"
     r"|Chapter\s+\d+|Part\s+\d+|\d+\s*[、.．])"
 )
-BOOK_KEY_VERSION = 3
+BOOK_KEY_VERSION = 4
 
 # 正在跑的子进程，按任务号登记。取消任务时靠它把进程掐掉——
 # 一次处理最长要跑一小时（三百多万字的大书），不给取消就只能干等。
@@ -117,21 +117,19 @@ def _norm_identity(text: str) -> str:
 def book_key_of(book: dict, name: str = "") -> str:
     """同一本书跨 TXT / EPUB 的稳定指纹。
 
-    引擎导出的 EPUB 会比源 TXT 多一个封面/参数页，章节边界也可能合并或拆分。
-    所以先只认像章号的标题，再看尾部章节标题和正文样本，不把精确章节数写进身份。
-    这样同一本书换个格式导入不会变成新书，不同卷/不同内容的书也不会因为同名被误并。
+    只以正文内容为准：TXT 文件名和 EPUB 元数据标题都不参与身份计算，避免同一
+    内容换个文件名或标题就变成两条书架记录。封面页/参数页会被忽略；只有正文为空
+    时才退回标题或文件名作为兜底。
     """
     chapters = book.get("chapters") or []
     body = [c for c in chapters if _CHAPTER_TITLE.search(str(c.get("title") or ""))] or chapters
-    title = _norm_identity(book.get("title") or safe_stem(name))
-    tails = "\n".join(_norm_identity(c.get("title") or "") for c in body[-3:])
-    picks = body[-5:-4] + body[-1:]
-    sample = "\n".join(
+    raw = "\n".join(
         _norm_identity(p)
-        for c in picks
-        for p in (c.get("paras") or [])[:2]
+        for c in body
+        for p in (c.get("paras") or [])
     )
-    raw = f"{title}\n{tails}\n{sample}"
+    if not raw:
+        raw = _norm_identity(book.get("title") or safe_stem(name))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

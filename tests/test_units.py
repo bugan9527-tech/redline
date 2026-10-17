@@ -160,6 +160,37 @@ class TestBookIdentity(WorkCase):
             E.book_key_of(B.read_book(epub, "书.epub"), "书.epub"),
         )
 
+    def test_identity_ignores_title_metadata(self):
+        """EPUB 元数据标题和 TXT 文件名不同，不应阻止同一正文合并。"""
+        txt, _ = self._pair()
+        epub = make_epub([("第1章 起", ["甲", "乙"]),
+                          ("第2章 落", ["丙", "丁"])], title="另一个标题")
+        self.assertEqual(
+            E.book_key_of(B.read_book(txt, "不同名的文件.txt"), "不同名的文件.txt"),
+            E.book_key_of(B.read_book(epub, "另一个标题.epub"), "另一个标题.epub"),
+        )
+
+    def test_different_body_same_title_is_not_merged(self):
+        """标题相同但正文不同，仍然必须是两本书。"""
+        txt, _ = self._pair()
+        epub = make_epub([("第1章 起", ["完全不同的正文"]),
+                          ("第2章 落", ["另一段正文"])], title="书")
+        self.assertNotEqual(
+            E.book_key_of(B.read_book(txt, "书.txt"), "书.txt"),
+            E.book_key_of(B.read_book(epub, "书.epub"), "书.epub"),
+        )
+
+    def test_cross_format_import_reuses_job_with_different_titles(self):
+        """改文件名、换 EPUB 标题后导入，仍应复用同一个书架 job。"""
+        txt, _ = self._pair()
+        epub = make_epub([("第1章 起", ["甲", "乙"]),
+                          ("第2章 落", ["丙", "丁"])], title="另一个标题")
+        job1, d1, _ = S.save_book_from_raw("不同名的文件.txt", txt)
+        job2, d2, reused = S.save_book_from_raw("另一个标题.epub", epub)
+        self.assertEqual(job1, job2)
+        self.assertEqual(d1, d2)
+        self.assertTrue(reused)
+
     def test_reimport_reuses_job(self):
         txt, _ = self._pair()
         job1, d1, reused1 = S.save_book_from_raw("书.txt", txt)

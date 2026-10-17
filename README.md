@@ -50,10 +50,11 @@ python app/server.py --log work/server.log   # 无控制台时把日志落到文
 python app/server.py --host 0.0.0.0     # 对局域网开放（无鉴权，默认只开本机）
 ```
 
-已经在跑的时候再启动一次不会报错：它先探一下 `/api/health`，发现是自己就把页面打开、安静退出。
+已经在跑的时候再启动一次不会报错：新启动的服务会先探一下 `/api/health`；端口上已有健康
+响应时，它只把页面打开并退出，不会换掉旧进程。
 
 **改过 `app/` 下的 `.py`（比如 `bookread.py`）之后要重启服务**：双击 `停止服务.bat`，再双击
-`启动.bat`。`启动.bat` 探到 8765 上有人在跑时只把页面打开、不会换进程——旧代码会一直留在
+`启动.bat`。8765 上已有服务在跑时，新进程只把页面打开、不会换进程——旧代码会一直留在
 内存里，改了也白改。阅读器页进来自会探一次服务版本，遇到旧版会直接把这句话写在页面上。
 
 四个页面：
@@ -107,20 +108,18 @@ WNF_SLOW=1 python -m unittest discover -s tests              # bash
 
 ## 提交与推送
 
-`origin` 走 SSH（`git@github.com:bugan9527-tech/redline.git`），推送就一条命令：
+`origin` 走 SSH（`git@github.com:bugan9527-tech/redline.git`），提交流程：
 
 ```bash
-git add -A
+git status
+git add <你改的文件...>
 git commit -m "说明"
 git push
 ```
 
 提交身份是本地 Git 配置，不会随仓库分发；新克隆需要自己设置 `user.name` 和
-`user.email`。如果本机 `github.com:443` 连不通，可以继续使用 SSH remote；这是网络
-环境问题，不是项目对 HTTPS 的要求。
-
-不要把 GitHub REST 的 git-data 接口当成日常提交工具；它和本地 Git 的提交对象语义不同，
-容易在 author/committer 元数据上产生不必要的差异。正常用 `git commit` / `git push` 即可。
+`user.email`。提交前先确认 `git status`，只暂存这次要提交的文件，避免把本地缓存和
+未跟踪目录带进去。
 
 ## HTTP 接口
 
@@ -157,10 +156,9 @@ percent-encode**（网页端用的就是 `encodeURIComponent(file.name)`）。
 有阅读版 = `judged`（已判定）；有阅读版且 `out/` 里有 `.epub` = `exported`（已导出）。
 这三个取值是网页端与 Android 端共用的书架语义。
 
-网页端书架按内容身份归并：同一份内容重复导入会复用已有 `job`；换成 TXT / EPUB
-另一种格式时，只有在 `book_key`（标题、尾部章节和正文样本的组合）一致时才会合并成
-一条。TXT 没有内嵌标题时文件名会参与身份计算，因此文件名或 EPUB 标题不一致时可能留下
-两条记录。
+网页端书架按正文身份归并：同一份内容重复导入会复用已有 `job`；换成 TXT / EPUB
+另一种格式、或只改文件名/元数据标题，也仍按同一份正文合并成一条。正文不同时，即使
+标题相同也不会合并。
 
 Android 原生书架按摊平后的 `src.txt` 内容哈希去重：同一份内容重复导入会复用已有
 记录，但不做 TXT / EPUB 的跨格式身份匹配。工作台只导出 EPUB，阅读器里直接打开的
