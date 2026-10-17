@@ -10,6 +10,7 @@ Android 没有 subprocess，所以这里把同一批只读模块 import 进来�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -58,11 +59,13 @@ def prescan(src, out_dir) -> dict:
 
 
 def prepare_source(raw_path, out_dir, name="") -> dict:
-    """选中的文件 -> 引擎认的 src.txt。返回 {"kind", "chapters"} 只给界面回话。
+    """选中的文件 -> 引擎认的 src.txt。返回 {"kind","chapters","source_hash"}。
 
     引擎只吃 TXT（EPUB / HTML 要先抽成文本再进来），所以 EPUB 得先按书脊解成章节
     分明的正文。这层照搬网页端 server.py 的做法，用的是同一个 bookread，Android 侧
     不另起一套解书逻辑。TXT 一个字节都不碰，改名过去就是。
+
+    source_hash 是 src.txt 的内容指纹，供书架按内容去重（同一本书再选一次不再入架）。
     """
     raw_path, out_dir = Path(raw_path), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -74,9 +77,182 @@ def prepare_source(raw_path, out_dir, name="") -> dict:
         book = bookread.read_book(raw_path.read_bytes(), name)
         src.write_bytes(bookread.to_txt(book).encode("utf-8"))
         raw_path.unlink(missing_ok=True)
-        return {"kind": "epub", "chapters": len(book.get("chapters", []))}
+        digest = hashlib.sha256(src.read_bytes()).hexdigest()
+        return {"kind": "epub", "chapters": len(book.get("chapters", [])),
+                "source_hash": digest}
     os.replace(raw_path, src)
-    return {"kind": "txt", "chapters": 0}
+    digest = hashlib.sha256(src.read_bytes()).hexdigest()
+    return {"kind": "txt", "chapters": 0, "source_hash": digest}
+
+
+def _plain_para(tier: str, text: str) -> dict:
+    """模板里 macro para(p) 认的那几个字段。直接读没有判定，kind / flags / tip 都空着。"""
+    return {"tier": tier or "plain", "kind": "", "flags_attr": "", "tip": "",
+            "tier_label": render_mod.TIER_LABEL.get(tier, ""), "text": text}
+
+
+def _direct_chapters(book: dict) -> list[dict]:
+    """把解出来的章编成模板认的 flow。没判过的就是一片 plain，不套任何淡化。"""
+    out = []
+    for i, ch in enumerate(book.get("chapters", [])):
+        tiers = ch.get("tiers") or []
+        flow = [
+            {"type": "para",
+             "paras": [_plain_para(tiers[j] if j < len(tiers) else "", text)]}
+            for j, text in enumerate(ch.get("paras", [])) if text.strip()
+        ]
+        out.append({"index": i + 1, "title": ch.get("title") or f"第 {i + 1} 章", "flow": flow})
+    return out
+
+
+def _direct_template():
+    return render_mod.Template(
+        (render_mod.ASSETS / "reader.html.j2").read_text(encoding="utf-8"), autoescape=True)
+
+
+def _hide_bar(html: str) -> str:
+    """直接读没有判定，引擎那条控制栏（强度 / 保留原文 / 面板）在这页没有意义，收起来。
+
+    这条排在 </body> 之前、<head> 那份样式之后，同特异度下按顺序取胜。
+    """
+    return html.replace("</body>", "<style>.bar{display: none}</style>\n</body>", 1)
+
+
+def _render_direct(book: dict, source: str, out_dir: Path, chars: int) -> Path:
+    """按引擎的 reader.html.j2 渲染。大书跟 build 一样拆成每章一份 + 目录 index.html——
+
+    单文件那版 300 万字要到十几 MB、十万个 DOM 节点，手机上打开基本就是卡死；
+    拆开每章十来 KB，翻页瞬时。阈值直接用引擎那一个，不另立。
+    """
+    template = _direct_template()
+    views = _direct_chapters(book)
+    total = sum(len(c["flow"]) for c in views)
+
+    if chars <= render_mod.SPLIT_AT_CHARS:
+        html = template.render(
+            toc=None, chapters=views, stats=[], source=source, nav=None,
+            total=total, marks_default="0",
+        )
+        out = out_dir / "book.html"
+        out.write_text(_hide_bar(html), encoding="utf-8")
+        return out
+
+    def name_of(i: int) -> str:
+        return f"ch{i:04d}.html"
+
+    toc = [
+        {
+            "index": ch["index"],
+            "title": ch["title"],
+            "href": name_of(ch["index"]),
+            "n": sum(len(it["paras"]) for it in ch["flow"]),
+            "n_plot": sum(1 for it in ch["flow"] for p in it["paras"] if p["tier"] == "plot"),
+            "n_fade": sum(
+                1 for it in ch["flow"] for p in it["paras"] if p["tier"] in ("fade", "zero")
+            ),
+        }
+        for ch in views
+    ]
+    for i, ch in enumerate(views):
+        nav = {
+            "prev": name_of(views[i - 1]["index"]) if i > 0 else None,
+            "next": name_of(views[i + 1]["index"]) if i + 1 < len(views) else None,
+            "home": "index.html",
+            "pos": f"{i + 1} / {len(views)}",
+        }
+        html = template.render(
+            toc=None, chapters=[ch], stats=[], source=source, nav=nav,
+            total=total, marks_default="0",
+        )
+        (out_dir / name_of(ch["index"])).write_text(_hide_bar(html), encoding="utf-8")
+
+    index = template.render(
+        toc=toc, chapters=[], stats=[], source=source, nav={"home": None},
+        total=total, marks_default="0",
+    )
+    index_out = out_dir / "index.html"
+    index_out.write_text(_hide_bar(index), encoding="utf-8")
+    return index_out
+
+
+def read_direct(raw_path, out_dir, name="") -> dict:
+    """直接读：不判定，解成章节后渲染出来，选完就能翻着看。
+
+    走的是桌面端 /read 那条路——reader.html 拿到文件直接渲染，不经体检、抽查、判定。
+    分层照旧保留：EPUB 里本来就带着的深浅（bookread 反解出的 tiers）一并渲染出来；
+    没判过的就是一片普通墨色（data-tier="plain" 不套任何淡化）。
+    """
+    raw_path, out_dir = Path(raw_path), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    book = bookread.read_book(raw_path.read_bytes(), name or raw_path.name)
+    source = book.get("title") or name or raw_path.name
+    target = _render_direct(book, source, out_dir, book.get("chars", 0))
+
+    tally: dict[str, int] = {}
+    for ch in book.get("chapters", []):
+        for t in ch.get("tiers", []):
+            if t and t != "plain":
+                tally[t] = tally.get(t, 0) + 1
+    return {
+        "kind": book.get("kind", "txt"),
+        "chapters": len(book.get("chapters", [])),
+        "chars": book.get("chars", 0),
+        "target": str(target),
+        "tiers": tally,
+    }
+
+
+def _tally_tiers(book: dict) -> dict[str, int]:
+    """数一遍这本书里非「普通/无」的分层档位，给界面显示用。"""
+    tally: dict[str, int] = {}
+    for ch in book.get("chapters", []):
+        for t in ch.get("tiers", []):
+            if t and t != "plain":
+                tally[t] = tally.get(t, 0) + 1
+    return tally
+
+
+def open_direct(raw_path, book_dir, name="") -> dict:
+    """阅读器里直接读一本：解章 + 渲染，同时把它落成一本书（src.txt 留在 book_dir）。
+
+    跟 read_direct 的差别只有一处：read_direct 是纯读、不落盘（工作台那条临时预览）；
+    这里的书要留在书架上，所以 source（src.txt）也写下来、并回报内容指纹 source_hash，
+    供书架按内容去重。渲染照旧保留 EPUB 里本来就带着的深浅（bookread 反解的 tiers）。
+    """
+    raw_path, book_dir = Path(raw_path), Path(book_dir)
+    book_dir.mkdir(parents=True, exist_ok=True)
+    book = bookread.read_book(raw_path.read_bytes(), name or raw_path.name)
+    # 复用工作台那条：TXT 原样搬、EPUB 按书脊摊平，顺带把内容指纹算出来。
+    info = prepare_source(raw_path, book_dir, name)
+    source = book.get("title") or name or raw_path.name
+    out = book_dir / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    target = _render_direct(book, source, out, book.get("chars", 0))
+    return {
+        "kind": info["kind"],
+        "chapters": len(book.get("chapters", [])),
+        "chars": book.get("chars", 0),
+        "target": str(target),
+        "tiers": _tally_tiers(book),
+        "source_hash": info["source_hash"],
+    }
+
+
+def source_meta(src_path, name="") -> dict:
+    """只解不渲：拿一本书的章数 / 字数 / 分层，用来在阅读器页顶上显示概要。
+
+    从书架续读一本「未判定」的书时，正文页已经渲染好了、不必重渲；这里只读一遍
+    src.txt 把概要拿回来，省掉一次整本渲染。
+
+    `src_path` 已经是摊平后的 TXT。`name` 只是原始显示名，可能还带 `.epub`；
+    不能拿它判断格式，否则会把 TXT 当 ZIP 解。保留参数仅为兼容旧调用。
+    """
+    p = Path(src_path)
+    book = bookread.read_book(p.read_bytes(), p.name)
+    return {"kind": book.get("kind", "txt"),
+            "chapters": len(book.get("chapters", [])),
+            "chars": book.get("chars", 0),
+            "tiers": _tally_tiers(book)}
 
 
 def _emit(progress, msg: str) -> None:
@@ -166,30 +342,33 @@ def ai_probe(endpoint, model, key) -> dict:
     return {"ok": ok, "message": msg}
 
 
-def ai_review(src_dir, endpoint, model, key, lo=0.30, hi=0.70, cap=400, batch=16,
-              progress_path="", progress=None) -> dict:
-    """对已判定的 analyzed.json 做 AI 复核（只碰模糊带），再按 build 的同一套模式重渲。
+def ai_review(src_dir, endpoint, model, key, lo=0.30, hi=0.70, cap=800, batch=16,
+              progress_path="", progress=None, concurrency=3) -> dict:
+    """对已判定的 analyzed.json 做 AI 标定和定向升级，再按同一套模式重渲。
 
     复核改的是 analyzed.json，HTML 得跟着重来一次。这一层是必经的：没配 key 就是没配好，
-    直接报错；某一批没跑成也不静默退回纯规则——那样等于悄悄少判一段。
-    progress_path 给一个普通路径，复核边跑边把 {done,total,reviewed,failed} 写进去，
+    直接报错；某一批没跑成也不静默退回纯规则。旧参数 lo/hi 保留只为协议兼容，
+    cap/AI_MAX 现在解释为抽样 + 升级的总预算。
+    progress_path 给一个普通路径，复核边跑边把进度写进去，
     界面靠轮询它显示进度——ai_layer 只认 WNF_PROGRESS 这个环境变量，这里替它设上。
     """
     src_dir = Path(src_dir)
     analyzed = src_dir / "analyzed.json"
     if not key:
-        raise ValueError("AI 复核是必须的一层：接口地址、模型名和 Key 都得先配好。")
+        raise ValueError("AI 标定是必须的一层：接口地址、模型名和 Key 都得先配好。")
 
     import ai_layer  # noqa: PLC0415
     ai_layer.ENGINE = _HERE
     os.environ["WNF_PROGRESS"] = str(progress_path or (src_dir / "progress.json"))
 
-    _emit(progress, "AI 复核模糊带…")
-    stats = ai_layer.run(analyzed, endpoint, model, key, float(lo), float(hi),
-                         int(cap), int(batch), False)
+    _emit(progress, "AI 抽样标定…")
+    # 桌面端新口径：cap/AI_MAX 是抽样 + 定向升级的总预算；lo/hi 只留作兼容。
+    stats = ai_layer.run(analyzed, endpoint, model, key,
+                         budget=int(cap), seed=0, batch=int(batch),
+                         concurrency=int(concurrency), dry=False)
     if stats.get("failed"):
         raise RuntimeError(
-            f"AI 复核有 {stats['failed']} 批没跑成（网络或额度的问题）；"
+            f"AI 标定有 {stats['failed']} 批没跑成（网络或额度的问题）；"
             "确认接口能用之后再出整本。")
     _emit(progress, f"复核完成：改判 {stats.get('reviewed', 0)} 段 / "
                     f"失败 {stats.get('failed', 0)} 批")
@@ -201,6 +380,18 @@ def ai_review(src_dir, endpoint, model, key, lo=0.30, hi=0.70, cap=400, batch=16
     target = src_dir if real == "split" else src_dir / "book.html"
     render_mod.render_doc(doc, target, mode=real, marks=False)
     _emit(progress, "阅读版已按复核结果更新")
+
+    # 只有 AI 全流程成功、analyzed.json 已应用且阅读版重渲完成后才落这个标记。
+    # 仅看 analyzed.json 或 calibration.json 都不够：失败批次的标定文件也可能已写出。
+    marker = src_dir / "ai_ok.json"
+    marker.write_text(json.dumps({
+        "version": 1,
+        "analyzed_sha256": hashlib.sha256(analyzed.read_bytes()).hexdigest(),
+        "model": model,
+        "reviewed": stats.get("reviewed", 0),
+        "failed": 0,
+        "calibration": str(stats.get("calibration") or ""),
+    }, ensure_ascii=False), encoding="utf-8")
 
     return {
         "asked": stats.get("asked", 0), "chars": stats.get("chars", 0),

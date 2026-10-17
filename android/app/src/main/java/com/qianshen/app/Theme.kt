@@ -63,10 +63,11 @@ val QsAccentInk = Color(0xFFE6DBC7)
 /** 出错文字；网页 .err。 */
 val QsErr = Color(0xFF8A1C0F)
 
-/** 文件名与显式二分的页名。三页共用一个顶栏，点它换页。 */
+/** 页名与显式二分的页名。四页共用一个顶栏，点它换页。 */
 enum class Page(val label: String) {
     Home("首页"),
     Bench("工作台"),
+    Shelf("书架"),
     Reader("阅读器"),
 }
 
@@ -134,7 +135,7 @@ fun AppHeader(current: Page, onNav: (Page) -> Unit) {
     }
 }
 
-private val PageBar = listOf(Page.Home, Page.Bench, Page.Reader)
+private val PageBar = listOf(Page.Home, Page.Bench, Page.Shelf, Page.Reader)
 
 @Composable
 private fun NavLink(label: String, on: Boolean, onClick: () -> Unit) {
@@ -143,7 +144,7 @@ private fun NavLink(label: String, on: Boolean, onClick: () -> Unit) {
         fontSize = 15.sp,
         color = if (on) QsInk else QsMuted,
         textDecoration = if (on) TextDecoration.Underline else TextDecoration.None,
-        modifier = Modifier.padding(start = 18.dp).clickable(onClick = onClick),
+        modifier = Modifier.padding(start = 14.dp).clickable(onClick = onClick),
     )
 }
 

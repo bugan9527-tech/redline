@@ -14,7 +14,7 @@
   1. （可跳过）gradle assembleDebug；随后校验 APK 里 arm64-v8a 三个引擎原生库齐全，
      缺一个就报错退出，不往设备上装。
   2. 装包 -> 把试验书塞进 App 私有目录 -> `am start --es regress` 触发 headless build；
-     设备侧判定结果与摘要落在 files/book/out/，脚本轮询 regress_done.json 判跑完。
+     设备侧判定结果与摘要落在 files/books/regress/out/，脚本轮询 regress_done.json 判跑完。
   3. 桌面侧用同一个 run.py build 出 parsed.json / analyzed.json。
   4. 逐段对照：段落数 / 拼接文本 sha1 / 每段 kind·tier·score / 人名集合。
      一致打对照表退出 0；有漂移打前 20 条差异 + 分层计数对照，退出 1。
@@ -57,7 +57,7 @@ NATIVE_LIBS = ("libomp.so", "libopenblas.so", "libc++_shared.so")
 DEVICE_TMP = "/data/local/tmp/wnf_regress_book.txt"
 PRIVATE_BOOK = "files/regress_book.txt"
 DEVICE_BOOK = f"/data/data/{PKG}/{PRIVATE_BOOK}"
-PRIVATE_OUT = "files/book/out"
+PRIVATE_OUT = "files/books/regress/out"
 
 # arm64 与 x86 的浮点尾差容忍；超过这个差才算真漂移。
 SCORE_TOL = 0.01

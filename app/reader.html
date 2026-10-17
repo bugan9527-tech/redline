@@ -10,15 +10,44 @@
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;700&family=Noto+Serif+SC:wght@200;400&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://api.fontshare.com/v2/css?f[]=zodiak@100,300&display=swap" rel="stylesheet">
 <style>
+/* 浅色是底：其余主题只换这一组变量，结构和字体一律不动。 */
 :root{
   --bg:#e6dbc7;--surface:#ddd0b9;--ink:#062b8a;--muted:#31509b;--accent-ink:#e6dbc7;
   --font-display:Zodiak,"Noto Serif SC","Songti SC",SimSun,serif;
   --font-text:"Hanken Grotesk","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
-  --font-read:"Noto Serif SC","Songti SC",SimSun,serif;
+  --font-serif:"Noto Serif SC","Songti SC",SimSun,serif;
+  --font-sans:"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
   --read-size:19px;
+  /* 排版四件套：正文这一层只认这几个变量，面板改了值整页立刻跟着变 */
+  --font-read:var(--font-serif);--read-align:left;
+  --read-lh:1.95;--read-gap:1.05;--read-width:44em;
+  /* 深浅三档的墨色也做成变量：见下面 .read p 那段注释 */
+  --t-plot:#111111;--t-mid:#333333;--t-weak:#999999;
+  --veil:0;
+}
+/* 排版：字体和正文对齐走 html 上的属性（宋体、左对齐是默认，不带属性就是它） */
+html[data-font="hei"]{--font-read:var(--font-sans)}
+html[data-align="justify"]{--read-align:justify}
+/* 深色：暖炭底，纸色反过来当墨色，保住这套配色的暖调。
+   档位色跟着反转——深底上"深灰=重要"是看不见的，重的一档必须更亮更重。 */
+html[data-theme="dark"]{
+  --bg:#15120e;--surface:#1e1a15;--ink:#e6dbc7;--muted:#a4936f;--accent-ink:#15120e;
+  --t-plot:#f4efe4;--t-mid:#c6bcab;--t-weak:#6f685c;
+}
+/* 护眼：豆绿纸 */
+html[data-theme="green"]{
+  --bg:#cfdcc4;--surface:#dbe6d2;--ink:#1e3a26;--muted:#4a6b50;--accent-ink:#eef4e8;
+  --t-plot:#12200f;--t-mid:#2c3a28;--t-weak:#7d8b76;
+}
+/* 反色：把浅色那套取反（米色纸↔靛蓝底、品牌蓝↔暖黄），不是深色的重复 */
+html[data-theme="invert"]{
+  --bg:#192438;--surface:#1f2c42;--ink:#f9d475;--muted:#c8ad60;--accent-ink:#192438;
+  --t-plot:#ffffff;--t-mid:#d7dce6;--t-weak:#7e879a;
 }
 *,*::before,*::after{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-text);font-size:17px;line-height:1.6}
+/* 亮度：整屏压一层黑膜，不改字色（改字色就等于偷偷把主题改掉）。 */
+.veil{position:fixed;inset:0;background:#000;opacity:var(--veil);pointer-events:none;z-index:60}
 a{color:inherit}
 h1,h2,p{margin:0;padding:0}
 button{font:inherit;color:inherit}
@@ -46,39 +75,127 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 .meta{font-size:15px;color:var(--muted)}
 .ctrls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .ctrls select{background:var(--surface);border:0;padding:10px 12px;font-size:15px;max-width:min(58vw,320px)}
-.read{max-width:44em;margin:26px auto 0;background:var(--surface);padding:clamp(26px,5vw,64px)}
+/* 阅读进度：吸在顶上——读到章中间它也不会跟着滚走。
+   位置以"章内滚动的比例"为准：只记章号太粗，读完半章还是"第 3 章"。
+   条子按已读字数/全书字数落点，百分比、章刻度、点条跳章都走同一套口径。 */
+.prog{position:sticky;top:0;z-index:20;background:var(--bg);display:flex;align-items:center;gap:16px;padding:14px 0 12px}
+.prog-track{position:relative;flex:1;height:9px;background:var(--surface);cursor:pointer}
+.prog-track::before{content:"";position:absolute;left:0;right:0;top:-8px;bottom:-8px}  /* 抬高点击区，不改观感 */
+.prog-track:hover{background:var(--muted)}
+.prog-fill{position:absolute;left:0;top:0;bottom:0;background:var(--ink);width:0}
+.prog-ticks{position:absolute;left:0;right:0;top:-3px;bottom:-3px;pointer-events:none}
+.prog-ticks i{position:absolute;top:0;bottom:0;width:1px;background:var(--bg)}
+.prog-text{font-size:13px;color:var(--muted);white-space:nowrap}
+/* 目录侧栏：抽屉式。目录 tab 逐章列，书签 tab 列最近读过的几个位置，共用一张清单，
+   内容由 renderSide() 按当前 tab 重画，所以只有侧栏开着的时候才建 DOM。 */
+.side{position:fixed;left:0;top:0;bottom:0;width:min(340px,88vw);z-index:50;background:var(--bg);
+  display:flex;flex-direction:column;border-right:1px solid var(--surface)}
+.scrim{position:fixed;inset:0;z-index:45;background:rgba(0,0,0,.18)}
+.side-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid var(--surface)}
+.side .seg{background:var(--surface)}
+.side-list{position:relative;flex:1;overflow-y:auto;padding:4px 0 20px}
+.side-item{display:flex;width:100%;border:0;background:transparent;text-align:left;gap:12px;
+  align-items:baseline;justify-content:space-between;padding:11px 16px;font-size:15px;cursor:pointer}
+.side-item:hover{background:var(--surface)}
+.side-item[aria-current="true"]{background:var(--surface);font-weight:600}
+.side-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-m{color:var(--muted);font-size:13px;white-space:nowrap}
+.side-note{color:var(--muted);font-size:13px;line-height:1.7;padding:14px 16px}
+/* 全文搜索：输入框挂在侧栏头下面、清单外面——敲字时清单会被重画，放在清单里焦点就断了 */
+.side-find{padding:12px 14px 0}
+.side-find input{width:100%;background:var(--surface);border:0;padding:10px 12px;font-size:15px;color:var(--ink)}
+.side-find .side-note{padding:8px 0 0}
+.side-hit{flex-direction:column;align-items:stretch;gap:4px}
+.side-hit .side-t{font-size:13px;color:var(--muted)}
+.hit-txt{font-size:14px;line-height:1.55;overflow-wrap:anywhere}
+.hit-txt mark{background:var(--ink);color:var(--accent-ink);padding:0 1px}
+/* 分页模式：正文收成一屏高，内容横向排成多栏，一栏就是一页，翻页就是把内容平移一栏。
+   栏宽和页高由 JS 量出来写内联样式（column-width 不吃百分比，只能实测）。
+   裁剪必须是 .clip 这一层：它正好等于正文栏的盒子。若把 overflow 放在卡片上，
+   裁剪边界是卡片的内边距盒，下一栏的开头会漏进右边距里。 */
+html[data-mode="page"] .clip{height:100%;overflow:hidden}
+html[data-mode="page"] .flow{height:100%;column-gap:0}
+/* 搜索命中的那一段闪一下 */
+.read p.hit{background:rgba(138,106,63,.22)}
+/* 主题那一排：四选一给分段按钮（选中态就用主题自己的墨色），亮度是滑杆 */
+.opts{margin-top:16px;background:var(--surface);padding:14px 18px;display:flex;flex-wrap:wrap;gap:12px 30px}
+.opts-row{display:flex;align-items:center;gap:12px}
+.opts-label{font-size:15px;color:var(--muted)}
+.opts-label i{font-style:normal;color:var(--ink)}
+.seg{display:flex;background:var(--bg)}
+.seg button{border:0;background:transparent;padding:8px 14px;font-size:15px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--accent-ink)}
+.opts input[type=range]{width:140px;accent-color:var(--ink)}
+.read{max-width:var(--read-width);margin:26px auto 0;background:var(--surface);padding:clamp(26px,5vw,64px)}
 .read h2{font-family:var(--font-display);font-weight:300;font-size:26px;line-height:1.25;margin-bottom:30px}
-/* 正文用近黑墨色，不用站点那支品牌蓝。深浅必须靠"黑↔灰"来表达：
+/* 正文用近黑墨色，不用站点那支品牌蓝。深浅必须靠"明↔暗"来表达：
    蓝色只是色调差，任何深浅刻度套在蓝上都读成了"蓝的浓淡"，不是"深/浅"。
-   别的阅读器里正文本来就是黑的，深浅才一眼看出——这里对齐同一套口径。 */
-.read p{font-family:var(--font-read);font-size:var(--read-size);line-height:1.95;margin-bottom:1.05em;text-indent:2em;color:#333333}
+   别的阅读器里正文本来就是黑的，深浅才一眼看出——这里对齐同一套口径。
+   档位色走 --t-* 变量、不写死：浅色主题是"深→浅"三档灰，深色/反色主题里
+   背景已经暗了，同样三档必须反过来是"亮→暗"，否则最重的那档在深底上等于消失。 */
+.read p{font-family:var(--font-read);font-size:var(--read-size);line-height:var(--read-lh);margin-bottom:calc(var(--read-gap) * 1em);text-indent:2em;text-align:var(--read-align);color:var(--t-mid)}
 .read p:last-child{margin-bottom:0}
 /* 三层就够：情节加深（更重更浓）、普通原文（基准墨色）、水（偏水 / 注水 / 零信息合并成一档灰）。
    引擎内部仍判五档，那是判定层留的处置余地；落到读的这一页，读者只要"看重的、看平的、跳过的"
    三眼分明。实色梯度，不用 opacity——透明度在小差距上肉眼看不出来。 */
-.read p[data-tier="plot"]{color:#111111;font-weight:600}
-.read p[data-tier="mid"]{color:#333333}
+.read p[data-tier="plot"]{color:var(--t-plot);font-weight:600}
+.read p[data-tier="mid"]{color:var(--t-mid)}
 .read p[data-tier="weak"],
 .read p[data-tier="fade"],
-.read p[data-tier="zero"]{color:#999999}
-.pager{display:flex;justify-content:space-between;gap:16px;max-width:44em;margin:22px auto 0}
+.read p[data-tier="zero"]{color:var(--t-weak)}
+.pager{display:flex;justify-content:space-between;gap:16px;max-width:var(--read-width);margin:22px auto 0}
 [hidden]{display:none !important}
 </style>
+<script>
+// 外观与排版在 <head> 里先落一次：等页面脚本跑到再应用，会先闪一下默认样式。
+try {
+  var p0 = JSON.parse(localStorage.getItem('qs_read_prefs') || 'null') || {};
+  var r0 = document.documentElement;
+  if (p0.theme) r0.setAttribute('data-theme', p0.theme);
+  if (p0.font) r0.setAttribute('data-font', p0.font);
+  if (p0.align) r0.setAttribute('data-align', p0.align);
+  if (p0.mode) r0.setAttribute('data-mode', p0.mode);
+  if (p0.bright >= 40 && p0.bright <= 100) r0.style.setProperty('--veil', String((100 - p0.bright) / 100));
+  if (p0.lh >= 1.5 && p0.lh <= 2.6) r0.style.setProperty('--read-lh', String(p0.lh));
+  if (p0.gap >= 0 && p0.gap <= 2) r0.style.setProperty('--read-gap', String(p0.gap));
+  if (p0.width >= 32 && p0.width <= 56) r0.style.setProperty('--read-width', p0.width + 'em');
+} catch (e) {}
+</script>
 </head>
 <body>
+<div class="veil" aria-hidden="true"></div>
+<div class="scrim" id="scrim" hidden></div>
+<aside class="side" id="side" hidden aria-label="目录、书签与搜索">
+  <div class="side-head">
+    <div class="seg" id="sideTabs" role="group" aria-label="侧栏内容">
+      <button type="button" data-tab="toc" aria-pressed="true">目录</button>
+      <button type="button" data-tab="marks" aria-pressed="false">书签</button>
+      <button type="button" data-tab="find" aria-pressed="false">搜索</button>
+    </div>
+    <button class="btn btn-sm btn-quiet" id="sideClose" type="button">收起</button>
+  </div>
+  <div class="side-find" id="sideFind" hidden>
+    <input type="search" id="findQ" placeholder="全书搜一下，回车不用按" aria-label="全文搜索" autocomplete="off">
+    <div class="side-note" id="findInfo"></div>
+  </div>
+  <div class="side-list" id="sideList"></div>
+</aside>
 <div class="wrap">
   <header class="top">
     <a class="mark" href="/">深浅</a>
-    <nav><a href="/">首页</a><a href="/app">工作台</a></nav>
+    <nav><a href="/">首页</a><a href="/app">工作台</a><a href="/shelf">书架</a></nav>
   </header>
 
-  <h1>手里的书，拿来就读。</h1>
-  <p class="sub">TXT 或 EPUB 放进来，自动分好章节，就在这一页读完。全部在你自己的机器上跑，不上传、不改写。</p>
-
-  <button class="drop" id="drop" type="button">
-    <b id="dropName">点这里选一个 TXT 或 EPUB</b>
-    <span id="dropMeta">也可以把文件拖到这块上面</span>
-  </button>
+  <!-- 开头这一段只有空手上门时才有用：有书就读正文，标题和选书块让位（换个文件会放回来）。
+       状态行留在外面：判读缺深浅标记这类提醒，有书的时候也得看得见。 -->
+  <div id="intro">
+    <h1>手里的书，拿来就读。</h1>
+    <p class="sub">TXT 或 EPUB 放进来，自动分好章节，就在这一页读完。全部在你自己的机器上跑，不上传、不改写。</p>
+    <button class="drop" id="drop" type="button">
+      <b id="dropName">点这里选一个 TXT 或 EPUB</b>
+      <span id="dropMeta">也可以把文件拖到这块上面</span>
+    </button>
+  </div>
   <input type="file" id="file" accept=".txt,.epub,text/plain,application/epub+zip" hidden>
   <div class="status" id="status">还没有选文件。</div>
 
@@ -86,16 +203,73 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     <div class="bar">
       <div class="meta" id="meta"></div>
       <div class="ctrls">
-        <select id="chaps" aria-label="章节目录"></select>
-        <button class="btn btn-sm btn-quiet" id="smaller" type="button" aria-label="字小一点">字小</button>
-        <button class="btn btn-sm btn-quiet" id="bigger" type="button" aria-label="字大一点">字大</button>
+        <button class="btn btn-sm btn-quiet" id="sideBtn" type="button" title="键盘 d">目录</button>
+        <button class="btn btn-sm btn-quiet" id="look" type="button" aria-expanded="false" aria-controls="opts" title="键盘 t">阅读设置</button>
+        <button class="btn btn-sm btn-quiet" id="smaller" type="button" aria-label="字小一点" title="键盘 -">字小</button>
+        <button class="btn btn-sm btn-quiet" id="bigger" type="button" aria-label="字大一点" title="键盘 +">字大</button>
+        <button class="btn btn-sm btn-quiet" id="full" type="button" title="键盘 f">全屏</button>
         <button class="btn btn-sm btn-quiet" id="reset" type="button">换个文件</button>
+      </div>
+    </div>
+    <div class="prog">
+      <div class="prog-track" id="progTrack" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" title="点一下，跳到那一章">
+        <div class="prog-fill" id="progFill"></div>
+        <div class="prog-ticks" id="progTicks"></div>
+      </div>
+      <span class="prog-text" id="progText"></span>
+    </div>
+    <div class="opts" id="opts" hidden>
+      <div class="opts-row">
+        <span class="opts-label">字体</span>
+        <div class="seg" id="fonts" role="group" aria-label="字体">
+          <button type="button" data-font="song" aria-pressed="true">宋体</button>
+          <button type="button" data-font="hei" aria-pressed="false">黑体</button>
+        </div>
+      </div>
+      <div class="opts-row">
+        <span class="opts-label">行距 <i id="lhV">1.95</i></span>
+        <input type="range" id="lh" min="1.5" max="2.6" step="0.05" value="1.95" aria-label="行距">
+      </div>
+      <div class="opts-row">
+        <span class="opts-label">段距 <i id="gapV">1.05</i></span>
+        <input type="range" id="gap" min="0" max="2" step="0.05" value="1.05" aria-label="段距">
+      </div>
+      <div class="opts-row">
+        <span class="opts-label">页宽 <i id="widthV">44em</i></span>
+        <input type="range" id="width" min="32" max="56" step="2" value="44" aria-label="页宽">
+      </div>
+      <div class="opts-row">
+        <span class="opts-label">对齐</span>
+        <div class="seg" id="aligns" role="group" aria-label="对齐">
+          <button type="button" data-align="left" aria-pressed="true">左对齐</button>
+          <button type="button" data-align="justify" aria-pressed="false">两端</button>
+        </div>
+      </div>
+      <div class="opts-row">
+        <span class="opts-label">翻页</span>
+        <div class="seg" id="modes" role="group" aria-label="翻页模式">
+          <button type="button" data-mode="scroll" aria-pressed="true">滚动</button>
+          <button type="button" data-mode="page" aria-pressed="false">分页</button>
+        </div>
+      </div>
+      <div class="opts-row">
+        <span class="opts-label">主题</span>
+        <div class="seg" id="themes" role="group" aria-label="主题">
+          <button type="button" data-theme="light" aria-pressed="true">浅色</button>
+          <button type="button" data-theme="dark" aria-pressed="false">深色</button>
+          <button type="button" data-theme="green" aria-pressed="false">护眼</button>
+          <button type="button" data-theme="invert" aria-pressed="false">反色</button>
+        </div>
+      </div>
+      <div class="opts-row">
+        <span class="opts-label">亮度 <i id="brightV">100%</i></span>
+        <input type="range" id="bright" min="40" max="100" step="5" value="100" aria-label="亮度">
       </div>
     </div>
     <article class="read" id="read"></article>
     <div class="pager">
-      <button class="btn btn-sm btn-quiet" id="prev" type="button">上一章</button>
-      <button class="btn btn-sm btn-quiet" id="next" type="button">下一章</button>
+      <button class="btn btn-sm btn-quiet" id="prev" type="button" title="键盘 ←，或点正文左边">上一章</button>
+      <button class="btn btn-sm btn-quiet" id="next" type="button" title="键盘 →，或点正文右边">下一章</button>
     </div>
   </div>
 </div>
@@ -104,7 +278,66 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var book = null, bookName = '', cur = 0, size = 19;
+  // 这本在书架上的号（work/<job>）。拖进来的书会落盘入架，从书架进来的带着号，
+  // 进度就报回这条记录；纯解析不带号（Android 端那条路）时不报，不影响。
+  var curJob = '';
   try { size = Math.min(26, Math.max(16, parseInt(localStorage.getItem('qs_read_size'), 10) || 19)); } catch (e) {}
+
+  // ---------- 外观与排版：整套设置存一个 localStorage 键，以后加项不用再造键 ----------
+  var THEMES = ['light', 'dark', 'green', 'invert'];
+  var PREFS_KEY = 'qs_read_prefs';
+  var prefs = { theme: 'light', font: 'song', align: 'left', lh: 1.95, gap: 1.05, width: 44, bright: 100, mode: 'scroll' };
+  // localStorage 是外部输入：挑值、夹范围，别让一个脏值把正文版式带跑
+  function pick(v, ok, dft) { return ok.indexOf(v) >= 0 ? v : dft; }
+  function ranged(v, lo, hi, dft) { v = parseFloat(v); return (isFinite(v) && v >= lo && v <= hi) ? v : dft; }
+  try {
+    var saved = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null') || {};
+    prefs.theme = pick(saved.theme, THEMES, prefs.theme);
+    prefs.font = pick(saved.font, ['song', 'hei'], prefs.font);
+    prefs.align = pick(saved.align, ['left', 'justify'], prefs.align);
+    prefs.lh = ranged(saved.lh, 1.5, 2.6, prefs.lh);
+    prefs.gap = ranged(saved.gap, 0, 2, prefs.gap);
+    prefs.width = ranged(saved.width, 32, 56, prefs.width);
+    prefs.bright = ranged(saved.bright, 40, 100, prefs.bright);
+    prefs.mode = pick(saved.mode, ['scroll', 'page'], prefs.mode);
+  } catch (e) {}
+
+  // 一组分段按钮里，把当前值那枚点亮
+  function markGroup(sel, attr, cur) {
+    var btns = document.querySelectorAll(sel + ' button');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].setAttribute('aria-pressed', String(btns[i].getAttribute(attr) === cur));
+    }
+  }
+
+  function applyPrefs() {
+    var root = document.documentElement, st = root.style;
+    // 配色、字体、对齐是"选哪个"，走 html 上的属性；行距段距页宽亮度是"多少"，走 CSS 变量
+    root.setAttribute('data-theme', prefs.theme);
+    root.setAttribute('data-font', prefs.font);
+    root.setAttribute('data-align', prefs.align);
+    root.setAttribute('data-mode', prefs.mode);
+    st.setProperty('--read-lh', String(prefs.lh));
+    st.setProperty('--read-gap', String(prefs.gap));
+    st.setProperty('--read-width', prefs.width + 'em');
+    st.setProperty('--veil', String((100 - prefs.bright) / 100));
+    markGroup('#themes', 'data-theme', prefs.theme);
+    markGroup('#fonts', 'data-font', prefs.font);
+    markGroup('#aligns', 'data-align', prefs.align);
+    markGroup('#modes', 'data-mode', prefs.mode);
+    $('lh').value = String(prefs.lh);
+    $('gap').value = String(prefs.gap);
+    $('width').value = String(prefs.width);
+    $('bright').value = String(prefs.bright);
+    $('lhV').textContent = prefs.lh.toFixed(2);
+    $('gapV').textContent = prefs.gap.toFixed(2);
+    $('widthV').textContent = prefs.width + 'em';
+    $('brightV').textContent = prefs.bright + '%';
+    // 版式或翻页模式一变，位置不能丢：重排（分页要重量栏宽页数）再按比例落回去
+    if (book) relayoutKeep();
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {}
+  }
+  applyPrefs();
 
   // ---------- 本地存书（IndexedDB）：刷新后书和读到的章节都还在 ----------
   var idb = {
@@ -135,12 +368,141 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   };
 
   function saveSpot() {
-    if (book) idb.set('last', { name: bookName, book: book, cur: cur });
+    if (!book) return;
+    // 顺手记一笔书签账：当前章挪到最前，留最近 8 条。百分比取整就够看了。
+    hist = hist.filter(function (h) { return h.c !== cur; });
+    hist.unshift({ c: cur, r: Math.round(curRatio * 100) });
+    hist = hist.slice(0, 8);
+    idb.set('last', { name: bookName, book: book, cur: cur, ratio: curRatio, hist: hist, job: curJob });
+    reportProgress();
+  }
+
+  // 位置报回书架那条记录：下次从书架点进来能续在原处。没号（纯解析）就不报。
+  function reportProgress() {
+    if (!curJob) return;
+    fetch('/api/library/progress', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ job: curJob, chapter: cur, ratio: curRatio }),
+    }).catch(function () {});
+  }
+
+  // 写盘按 500ms 节流：滚动时别每像素都往 IndexedDB 写一次
+  var saveTimer = null;
+  function saveSpotSoon() {
+    if (saveTimer) return;
+    saveTimer = setTimeout(function () { saveTimer = null; saveSpot(); }, 500);
+  }
+
+  // ---------- 阅读进度：进度条 / 百分比 / 章刻度 / 剩余时间 ----------
+  // 章号太粗（读完半章也还是"第 3 章"），所以位置记成 {章号, 章内滚动比例}。
+  // 条子按"已读字数 / 全书字数"落点：百分比、章刻度、点条跳章全走这一套口径。
+  var CHARS_PER_MIN = 400;   // 中文网文的常见速度；估个够用的数，不做自适应
+  var charStarts = [], totalChars = 0, curRatio = 0;
+
+  function countBook() {
+    charStarts = [];
+    totalChars = 0;
+    book.chapters.forEach(function (c) {
+      charStarts.push(totalChars);
+      (c.paras || []).forEach(function (t) { totalChars += t.length; });
+    });
+  }
+
+  // 章刻度一章一根；章太多的书按步长抽，全画出来会糊成一条
+  function buildTicks() {
+    var n = book.chapters.length, step = Math.max(1, Math.ceil(n / 120));
+    var box = $('progTicks');
+    box.innerHTML = '';
+    for (var i = step; i < n; i += step) {
+      var t = document.createElement('i');
+      t.style.left = (charStarts[i] / totalChars * 100) + '%';
+      box.appendChild(t);
+    }
+  }
+
+  function scrollRatio() {
+    var max = document.documentElement.scrollHeight - window.innerHeight;
+    return max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+  }
+
+  function scrollToRatio(r) {
+    var max = document.documentElement.scrollHeight - window.innerHeight;
+    window.scrollTo(0, Math.round(r * Math.max(0, max)));
+  }
+
+  function humanMin(min) {
+    if (min >= 60) {
+      var h = Math.floor(min / 60), m = Math.round(min % 60);
+      return h + ' 时' + (m ? ' ' + m + ' 分' : '');
+    }
+    return Math.max(1, Math.round(min)) + ' 分';
+  }
+
+  function updateProgress() {
+    if (!book || !totalChars) return;
+    var chapChars = (charStarts[cur + 1] || totalChars) - charStarts[cur];
+    var done = charStarts[cur] + chapChars * curRatio;
+    var pct = Math.max(0, Math.min(100, Math.round(done / totalChars * 100)));
+    $('progFill').style.width = pct + '%';
+    $('progTrack').setAttribute('aria-valuenow', String(pct));
+    $('progText').textContent = pct >= 100
+      ? '100% · 已读完'
+      : pct + '% · ' + (cur + 1) + '/' + book.chapters.length + ' 章 · 剩 ' +
+        humanMin((totalChars - done) / CHARS_PER_MIN);
+  }
+
+  // ---------- 分页模式：正文横向排成多栏，一栏就是一页 ----------
+  // 栏宽不能写百分比（column-width 只吃长度），所以量出来写内联样式；
+  // 页高 = 视口高减去卡片顶端和下面那行翻章按钮，量完就固定，文档也就不再滚动。
+  var flowEl = null, pageW = 0, pages = 1, page = 0;
+
+  function layoutFlow() {
+    var card = $('read');
+    card.style.height = '';
+    if (flowEl) flowEl.style.cssText = '';   // 清掉上次量的栏宽和位移
+    pages = 1; page = 0; pageW = 0;
+    if (!flowEl || prefs.mode !== 'page') return;
+    window.scrollTo(0, 0);                   // 分页下不要文档滚动，量高度前先归位
+    var pagerH = $('next').parentNode.offsetHeight || 0;
+    var top = card.getBoundingClientRect().top;
+    card.style.height = Math.max(260, Math.round(window.innerHeight - top - pagerH - 24)) + 'px';
+    pageW = Math.max(200, Math.floor(flowEl.clientWidth));
+    flowEl.style.columnWidth = pageW + 'px';
+    pages = Math.max(1, Math.round(flowEl.scrollWidth / pageW));
+  }
+
+  function setPage(i) {
+    page = Math.min(Math.max(0, i), Math.max(0, pages - 1));
+    if (flowEl) flowEl.style.transform = 'translateX(' + (-page * pageW) + 'px)';
+    curRatio = pages > 1 ? page / (pages - 1) : 0;   // 章内进度 = 第几页，口径和滚动比例一样
+    updateProgress();
+    saveSpotSoon();
+  }
+
+  // 按当前模式把位置比例落回去：分页落到页，滚动落到滚动位置
+  function applyPosition(r) {
+    if (prefs.mode === 'page') setPage(Math.round(r * Math.max(0, pages - 1)));
+    else scrollToRatio(r);
+  }
+
+  // 重排一次但位置不能丢：换模式、改版式、转屏、开关面板之后都走它
+  function relayoutKeep() {
+    var keep = curRatio;
+    layoutFlow();
+    applyPosition(keep);
+  }
+
+  // 分页模式下翻一页；翻到头就跨章（上一章要落在它的最后一页）
+  function turnPage(dir) {
+    if (page + dir >= 0 && page + dir < pages) { setPage(page + dir); return; }
+    if (dir > 0) { if (cur < book.chapters.length - 1) { cur += 1; render(0); } }
+    else if (cur > 0) { cur -= 1; render(1); }
   }
 
   function applySize() {
     document.documentElement.style.setProperty('--read-size', size + 'px');
     try { localStorage.setItem('qs_read_size', String(size)); } catch (e) {}
+    if (book && prefs.mode === 'page') relayoutKeep();   // 字号一变，分栏和页数都得重量
   }
   applySize();
 
@@ -153,36 +515,162 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     return c.title || ('第 ' + (i + 1) + ' 节');
   }
 
-  function fillChaps() {
-    var sel = $('chaps');
-    sel.innerHTML = '';
-    book.chapters.forEach(function (c, i) {
-      var o = document.createElement('option');
-      o.value = String(i);
-      o.textContent = label(c, i);
-      sel.appendChild(o);
+  // ---------- 侧栏：目录 / 书签 / 搜索三个 tab，共用一张清单 ----------
+  var sideTab = 'toc';
+  var hist = [];        // 书签那份账：最近读过的 8 个位置，自动记，不用手动加
+  var findHits = [];    // 搜索命中：{c 章号, p 段序号, at 段内位置, text 原文}
+  var findTimer = null;
+
+  function openSide(tab) {
+    if (!book) return;
+    if (tab) sideTab = tab;
+    $('side').hidden = false;
+    $('scrim').hidden = false;
+    markGroup('#sideTabs', 'data-tab', sideTab);
+    renderSide();
+    if (sideTab === 'find') $('findQ').focus();   // 按 / 进来的，光标直接落到框里
+  }
+  function closeSide() {
+    $('side').hidden = true;
+    $('scrim').hidden = true;
+  }
+
+  function renderSide() {
+    var box = $('sideList');
+    box.innerHTML = '';
+    $('sideFind').hidden = sideTab !== 'find';
+    if (sideTab === 'find') { renderHits(box); return; }
+    var list = sideTab === 'toc'
+      ? book.chapters.map(function (c, i) { return { i: i, t: label(c, i), m: '', r: 0, now: i === cur }; })
+      : hist.map(function (h) {
+          return { i: h.c, t: label(book.chapters[h.c], h.c), m: h.r >= 100 ? '读完' : h.r + '%', r: h.r / 100, now: h.c === cur };
+        });
+    list.forEach(function (x) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'side-item';
+      if (x.now) b.setAttribute('aria-current', 'true');
+      var t = document.createElement('span');
+      t.className = 'side-t';
+      t.textContent = x.t;
+      b.appendChild(t);
+      if (x.m) {
+        var m = document.createElement('span');
+        m.className = 'side-m';
+        m.textContent = x.m;
+        b.appendChild(m);
+      }
+      b.addEventListener('click', function () { gotoChapter(x.i, x.r); closeSide(); });
+      box.appendChild(b);
+    });
+    if (!list.length) {
+      var n = document.createElement('div');
+      n.className = 'side-note';
+      n.textContent = sideTab === 'toc' ? '这本没有分章。' : '还没读过哪儿：翻两页，这里会自动记账。';
+      box.appendChild(n);
+    }
+    // 开侧栏时把当前章挪到眼前：几千章的书不该从第一章翻起
+    var here = box.querySelector('[aria-current="true"]');
+    if (here) box.scrollTop = Math.max(0, here.offsetTop - box.clientHeight / 2);
+  }
+  // 侧栏开着才重画：几千章的清单不该每翻一章建一次
+  function refreshSide() { if (!$('side').hidden) renderSide(); }
+
+  // ---------- 全文搜索：扫全书段落，命中处截一段上下文 ----------
+  function runFind(q) {
+    findHits = [];
+    var needle = q.toLowerCase(), CAP = 300;
+    for (var ci = 0; ci < book.chapters.length; ci++) {
+      var paras = book.chapters[ci].paras || [];
+      for (var pi = 0; pi < paras.length; pi++) {
+        var t = paras[pi], at = t.toLowerCase().indexOf(needle);
+        if (at < 0) continue;
+        findHits.push({ c: ci, p: pi, at: at, text: t });
+        if (findHits.length >= CAP) return;   // 一部大书命中几千处也没人翻，够看就行
+      }
+    }
+  }
+
+  function renderHits(box) {
+    var q = $('findQ').value.trim();
+    $('findInfo').textContent = !q ? '全书都能搜：敲两个字试试。'
+      : findHits.length >= 300 ? '命中太多，只列前 300 处。'
+      : findHits.length ? '命中 ' + findHits.length + ' 处。'
+      : '没找到。';
+    findHits.forEach(function (h) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'side-item side-hit';
+      var t = document.createElement('span');
+      t.className = 'side-t';
+      t.textContent = label(book.chapters[h.c], h.c);
+      // 片段掐前后各一段，命中那段单独包 <mark>：拼节点不用 innerHTML，搜索词不会变成标签
+      var line = document.createElement('span');
+      line.className = 'hit-txt';
+      var from = Math.max(0, h.at - 16), to = Math.min(h.text.length, h.at + q.length + 34);
+      if (from > 0) line.appendChild(document.createTextNode('…'));
+      line.appendChild(document.createTextNode(h.text.slice(from, h.at)));
+      var mk = document.createElement('mark');
+      mk.textContent = h.text.substr(h.at, q.length);   // 用原文的大小写，不用输入框里的
+      line.appendChild(mk);
+      line.appendChild(document.createTextNode(h.text.slice(h.at + q.length, to)));
+      if (to < h.text.length) line.appendChild(document.createTextNode('…'));
+      b.appendChild(t);
+      b.appendChild(line);
+      b.addEventListener('click', function () { jumpToHit(h); });
+      box.appendChild(b);
     });
   }
 
-  function render() {
+  // 跳到命中处：先落到那一章，再滚到那一段 / 翻到它所在的那页，闪一下
+  function jumpToHit(h) {
+    gotoChapter(h.c, 0);
+    var el = $('read').querySelectorAll('p')[h.p];
+    if (!el) { closeSide(); return; }
+    if (prefs.mode === 'page') {
+      var base = flowEl ? flowEl.getBoundingClientRect().left : 0;
+      setPage(Math.round((el.getBoundingClientRect().left - base) / Math.max(1, pageW)));
+    } else {
+      el.scrollIntoView({ block: 'center' });
+    }
+    el.classList.add('hit');
+    setTimeout(function () { el.classList.remove('hit'); }, 1800);
+    closeSide();
+  }
+
+  function render(ratio) {
     var c = book.chapters[cur];
     var box = $('read');
     box.innerHTML = '';
+    // 正文包两层：.clip 是分页时的裁剪框（正好等于正文栏），.flow 是多栏容器。
+    // 滚动模式底下这两层就是普通块，什么也不做。
+    var clip = document.createElement('div');
+    clip.className = 'clip';
+    var flow = document.createElement('div');
+    flow.className = 'flow';
     var h = document.createElement('h2');
     h.textContent = label(c, cur);
-    box.appendChild(h);
+    flow.appendChild(h);
     var tiers = c.tiers || [];       // 与 paras 一一对应；没有分层信息的书就是 plain（原样）
     c.paras.forEach(function (t, i) {
       var p = document.createElement('p');
       p.textContent = t;
       p.setAttribute('data-tier', tiers[i] || 'plain');
-      box.appendChild(p);
+      flow.appendChild(p);
     });
-    $('chaps').value = String(cur);
+    clip.appendChild(flow);
+    box.appendChild(clip);
+    flowEl = flow;
     $('prev').disabled = cur <= 0;
     $('next').disabled = cur >= book.chapters.length - 1;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    // 落点是章内的比例：换章从头（0），接着上次读就从存下的比例续上。
+    // 用即时跳转不用平滑滚动——从章尾平滑滚回章首会白等一路。
+    curRatio = ratio || 0;
+    layoutFlow();               // 分页模式量栏宽页数（滚动模式只把内联样式清干净）
+    applyPosition(curRatio);
+    updateProgress();
     saveSpot();
+    refreshSide();   // 侧栏开着的话，把高亮和书签账目跟上（账目在 saveSpot 里更新）
   }
 
   // 这本书里有没有读到过分层标记（全是 plain 就是没读到）
@@ -192,19 +680,20 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     });
   }
 
-  function showBook(name) {
+  function showBook(name, ratio) {
     bookName = name;
-    $('dropName').textContent = name;
-    $('dropMeta').textContent = '换一本就再点这里';
+    $('intro').hidden = true;    // 有书了：标题和选书块让位，直接读正文
     setStatus('', false);
     $('view').hidden = false;
     var meta = [book.kind === 'epub' ? 'EPUB' : 'TXT'];
     if (book.title) meta.unshift(book.title);
+    if (book.view === 'judged') meta.push('深浅版');
     meta.push(book.chapters.length + ' 章');
     meta.push((book.chars || 0).toLocaleString('zh-CN') + ' 字');
     $('meta').textContent = meta.join(' · ');
-    fillChaps();
-    render();
+    countBook();          // 进度条要按字数算，先把每章的字数起点铺好
+    buildTicks();
+    render(ratio || 0);
     // EPUB 本该带着深浅；一个字都没读回来，说明要么这本没判读过，要么本地服务还是旧的。
     if (book.kind === 'epub' && !hasTiers(book)) {
       setStatus('没从文件里读回深浅标记。若这本是工作台判读导出的，请重启本地服务后再拖一次。', false);
@@ -213,7 +702,8 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 
   function load(file) {
     setStatus('正在读 ' + file.name + ' …', false);
-    fetch('/api/read', { method: 'POST', body: file, headers: { 'x-filename': encodeURIComponent(file.name) } })
+    // shelf=1：这本落盘入架（书留在 work/ 里，回书架还能找到），同时拿回它的号。
+    fetch('/api/read?shelf=1', { method: 'POST', body: file, headers: { 'x-filename': encodeURIComponent(file.name) } })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
         if (!res.ok || res.j.error) {
@@ -221,8 +711,44 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
           return;
         }
         book = res.j;
+        curJob = res.j.job || '';
         cur = 0;
+        hist = [];       // 换了书，书签账从头记（旧账是上一本的位置）
+        findHits = [];   // 上一本的搜索结果也一样作废
+        $('findQ').value = '';
         showBook(file.name);
+        if (res.j.reused) {
+          setStatus('这本书书架里已经有了，接着读；没有新建记录。', false);
+        }
+      })
+      .catch(function (e) { setStatus('出错：' + e.message, true); });
+  }
+
+  // 从书架点进来（?job=...）：有判定结果就读带深浅档位的正文，否则读原文；
+  // 续在上次那一屏。
+  function openByJob(job, chapter, ratio) {
+    curJob = job;
+    // 从书架点进来就不再露导入框：即使接口失败，也不能让读者以为要重新选文件。
+    $('intro').hidden = true;
+    $('view').hidden = true;
+    setStatus('正在打开这本…', false);
+    fetch('/api/read-book?job=' + encodeURIComponent(job))
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || res.j.error) {
+          var why = (res.j && res.j.error) || '读不出来';
+          if (res.j && why === '没有这个地址') {
+            why = '本地服务还是旧版，没有「按书打开」这个接口。先双击「停止服务.bat」，再双击「启动.bat」，然后从书架重新点进来。';
+          }
+          setStatus('打不开这本书：' + why, true);
+          return;
+        }
+        book = res.j;
+        cur = Math.min(Math.max(0, chapter || 0), book.chapters.length - 1);
+        hist = [];
+        findHits = [];
+        $('findQ').value = '';
+        showBook(res.j.name || res.j.title || '书架里的书', ratio || 0);
       })
       .catch(function (e) { setStatus('出错：' + e.message, true); });
   }
@@ -240,14 +766,148 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     if (f) load(f);
   });
 
-  $('chaps').addEventListener('change', function () { cur = parseInt(this.value, 10) || 0; render(); });
-  $('prev').addEventListener('click', function () { if (cur > 0) { cur -= 1; render(); } });
-  $('next').addEventListener('click', function () { if (book && cur < book.chapters.length - 1) { cur += 1; render(); } });
+  // 目录侧栏的开关：顶栏「目录」、收起按钮、点边上空白三处
+  // 从「目录」进去就落在目录 tab（按钮写着目录，别跳去书签）
+  $('sideBtn').addEventListener('click', function () {
+    if ($('side').hidden) openSide('toc');
+    else closeSide();
+  });
+  $('sideClose').addEventListener('click', closeSide);
+  $('scrim').addEventListener('click', closeSide);
+  Array.prototype.forEach.call(document.querySelectorAll('#sideTabs button'), function (b) {
+    b.addEventListener('click', function () { openSide(b.getAttribute('data-tab')); });
+  });
+  // 阅读设置面板：点「阅读设置」展开（默认收起，免得顶栏一直挂着控件）
+  $('look').addEventListener('click', function () {
+    var open = $('opts').hidden;
+    $('opts').hidden = !open;
+    $('look').setAttribute('aria-expanded', String(open));
+    // 面板占了一屏里的一段，分页模式底下正文的高度得跟着重算
+    if (book && prefs.mode === 'page') relayoutKeep();
+  });
+  // 搜索：敲字就搜（攒 200ms 再扫），命中清单重画在侧栏里
+  $('findQ').addEventListener('input', function () {
+    clearTimeout(findTimer);
+    findTimer = setTimeout(function () {
+      var q = $('findQ').value.trim();
+      if (q) runFind(q);
+      else findHits = [];      // 空串会命中每一段，别搜
+      renderSide();
+    }, 200);
+  });
+  // 转屏：分页模式要重新量栏宽页数（滚动模式交给浏览器自己）
+  window.addEventListener('resize', function () {
+    if (book && prefs.mode === 'page') relayoutKeep();
+  });
+  // 面板里八个控件走同一套：读控件 → 写 prefs → 应用，省得各写一遍
+  function wireGroup(sel, key, attr) {
+    Array.prototype.forEach.call(document.querySelectorAll(sel + ' button'), function (b) {
+      b.addEventListener('click', function () { prefs[key] = b.getAttribute(attr); applyPrefs(); });
+    });
+  }
+  function wireSlider(id, key, parse) {
+    $(id).addEventListener('input', function () { prefs[key] = parse(this.value); applyPrefs(); });
+  }
+  wireGroup('#themes', 'theme', 'data-theme');
+  wireGroup('#fonts', 'font', 'data-font');
+  wireGroup('#aligns', 'align', 'data-align');
+  wireGroup('#modes', 'mode', 'data-mode');
+  wireSlider('lh', 'lh', parseFloat);
+  wireSlider('gap', 'gap', parseFloat);
+  wireSlider('width', 'width', parseFloat);
+  wireSlider('bright', 'bright', function (v) { return parseFloat(v) || 100; });
+  // 翻章只有这一支：按钮、键盘、点左右、侧栏、搜索跳转都走它，省得各写一遍夹范围
+  function gotoChapter(i, ratio) {
+    if (!book) return;
+    cur = Math.min(Math.max(0, i), book.chapters.length - 1);
+    render(ratio || 0);
+  }
+  // 左右那一档的口径：分页模式翻一页，滚动模式翻一章
+  function flip(dir) {
+    if (prefs.mode === 'page') turnPage(dir);
+    else gotoChapter(cur + dir);
+  }
+  $('prev').addEventListener('click', function () { gotoChapter(cur - 1); });
+  $('next').addEventListener('click', function () { gotoChapter(cur + 1); });
+  // 点正文左右两条边各 25% 翻页/翻章，中间不动（之前定下的交互，别改）
+  document.addEventListener('click', function (e) {
+    if (!book) return;
+    // 控件、面板、进度条、拖拽区、侧栏上的点击都不算翻页
+    if (e.target.closest('button, a, select, input, label, .opts, .prog, .drop, .top, .side, .scrim')) return;
+    if (String(window.getSelection())) return;   // 刚拖选过字，别顺手替人翻章
+    var r = $('read').getBoundingClientRect();
+    if (e.clientY < r.top || e.clientY > r.bottom) return;   // 只在正文区里响应
+    var f = (e.clientX - r.left) / r.width;
+    if (f <= 0.25) flip(-1);
+    else if (f >= 0.75) flip(1);
+  });
+  // 全屏：整页进全屏，按钮上跟着变字
+  function toggleFull() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen();
+  }
+  $('full').addEventListener('click', toggleFull);
+  document.addEventListener('fullscreenchange', function () {
+    $('full').textContent = document.fullscreenElement ? '退出全屏' : '全屏';
+  });
+  // 键盘：←/→ 翻页（分页）或翻章（滚动）、空格与 PgUp/PgDn 翻屏、+/- 字号、
+  //       t 设置、d 目录、/ 搜索、f 全屏
+  window.addEventListener('keydown', function (e) {
+    if (!book || e.ctrlKey || e.metaKey || e.altKey) return;   // 带修饰键的交给浏览器
+    var tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;   // 焦点在控件里，别抢键
+    var step = Math.round(window.innerHeight * 0.85);
+    switch (e.key) {
+      case 'ArrowLeft': flip(-1); break;
+      case 'ArrowRight': flip(1); break;
+      case 'ArrowUp': if (prefs.mode !== 'page') return; turnPage(-1); break;
+      case 'ArrowDown': if (prefs.mode !== 'page') return; turnPage(1); break;
+      case ' ': if (prefs.mode === 'page') turnPage(e.shiftKey ? -1 : 1); else window.scrollBy(0, e.shiftKey ? -step : step); break;
+      case 'PageDown': if (prefs.mode === 'page') turnPage(1); else window.scrollBy(0, step); break;
+      case 'PageUp': if (prefs.mode === 'page') turnPage(-1); else window.scrollBy(0, -step); break;
+      case '+': case '=': size = Math.min(26, size + 1); applySize(); break;
+      case '-': case '_': size = Math.max(16, size - 1); applySize(); break;
+      case 'f': case 'F': toggleFull(); break;
+      case 't': case 'T': $('look').click(); break;
+      case 'd': case 'D': if ($('side').hidden) openSide('toc'); else closeSide(); break;
+      case '/': openSide('find'); break;
+      case 'Escape':
+        if (!$('side').hidden) closeSide();
+        else if (!$('opts').hidden) $('look').click();
+        break;
+      default: return;
+    }
+    e.preventDefault();
+  });
+  // ---------- 滚动 → 位置、进度条、节流写盘 ----------
+  window.addEventListener('scroll', function () {
+    // 分页模式底下没有文档滚动（位置由页号说话），这里只管滚动模式
+    if (!book || prefs.mode === 'page') return;
+    curRatio = scrollRatio();
+    updateProgress();
+    saveSpotSoon();
+  }, { passive: true });
+  // 关页面/切走时补写一次：被节流省掉的那 500ms 里滚到的位置，这里补回来
+  window.addEventListener('pagehide', function () { if (book) saveSpot(); });
+  // 点进度条跳章：按"已读字数"同一套口径反查落哪一章，从那一章开头读起
+  $('progTrack').addEventListener('click', function (e) {
+    if (!book || !totalChars) return;
+    var r = this.getBoundingClientRect();
+    var target = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * totalChars;
+    var i = 0;
+    while (i < charStarts.length - 1 && charStarts[i + 1] <= target) i++;
+    cur = i;
+    render(0);
+  });
   $('bigger').addEventListener('click', function () { size = Math.min(26, size + 1); applySize(); });
   $('smaller').addEventListener('click', function () { size = Math.max(16, size - 1); applySize(); });
   $('reset').addEventListener('click', function () {
-    book = null; cur = 0;
+    book = null; cur = 0; hist = []; findHits = [];
+    curJob = '';       // 空手了，别再给上一本报进度
+    $('findQ').value = '';
+    closeSide();
     idb.del('last');
+    $('intro').hidden = false;   // 空手了：标题和选书块放回来
     $('view').hidden = true;
     $('file').value = '';
     $('dropName').textContent = '点这里选一个 TXT 或 EPUB';
@@ -255,17 +915,37 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     setStatus('还没有选文件。', false);
   });
 
+  // ---------- 从书架点进来（?job=...）：直接打开那本 ----------
+  // 先记下号：openByJob 要等网络回来，这段等待里不能让"上次那本"抢先填上。
+  var shelfJob = '';
+  (function () {
+    try {
+      var q = new URLSearchParams(location.search);
+      shelfJob = q.get('job') || '';
+      if (shelfJob) {
+        openByJob(shelfJob,
+          parseInt(q.get('chapter') || '0', 10) || 0,
+          parseFloat(q.get('ratio') || '0') || 0);
+      }
+    } catch (e) {}
+  })();
+
   // ---------- 进来先翻翻上次读到哪：书还在就接着读 ----------
   idb.open(function () {
     idb.get('last', function (saved) {
-      if (book) return;  // 用户手快已经开了新书，别拿旧的盖上去
+      if (book || shelfJob) return;  // 从书架进来的那本优先，别拿"上次那本"盖上去
       if (!saved || !saved.book || !saved.book.chapters || !saved.book.chapters.length) return;
       // 旧缓存没有 tiers（加分层之前存下的），拿回来只会显示成一片普通，看不出深浅。
       // 判掉它，让用户重新选一次文件，走新的解析。
       if (!saved.book.chapters[0].tiers) { idb.del('last'); return; }
       book = saved.book;
+      curJob = saved.job || '';    // 上次那本也可能是入过架的，续读时照样报回它
       cur = Math.min(saved.cur || 0, book.chapters.length - 1);
-      showBook(saved.name || '上次的书');
+      // 书签账目只认这本里还在的章：存坏了或换书留下的脏数据，在这里挡掉
+      hist = (saved.hist || []).filter(function (h) {
+        return h && h.c >= 0 && h.c < book.chapters.length && h.r >= 0 && h.r <= 100;
+      }).slice(0, 8);
+      showBook(saved.name || '上次的书', saved.ratio);   // 章号 + 章内比例，续在离开的那一屏
       setStatus('上次读到这，接着看。', false);
     });
   });

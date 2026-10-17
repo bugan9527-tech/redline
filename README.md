@@ -3,9 +3,9 @@
 把一本中文网文（TXT / EPUB）读成**深浅**。
 
 逐段判读，关键情节加重、注水淡化、零信息判死，产出一份强度可调的 HTML 阅读版和一份
-EPUB。引擎本体是纯本地规则；规则判不准的那一段（默认 0.30~0.70 的模糊带）**必须**接上
-你自己的模型复核一遍——端点、模型、Key 都由你填，喂给它的判定标准只读自引擎 skill 的
-`references/`，Key 不落盘、不进日志。这一层是必经的，配不齐接口就出不了书。
+EPUB。引擎本体是纯本地规则；AI 层按规则签名抽样标定，只把分歧大的桶按预算做定向升级——
+端点、模型、Key 都由你填，模型输出五类标签和原文引用，不直接给连续分。Key 不落盘、
+不进日志。这一层是必经的，配不齐接口就出不了书。
 
 引擎只有一份：桌面上跑成本地网页，手机上打包进 APK 在本地跑。
 
@@ -14,7 +14,7 @@ EPUB。引擎本体是纯本地规则；规则判不准的那一段（默认 0.3
 - 一台能跑 Python 的机器（Windows / macOS / Linux 都行）
 - **Python 3.10 或更高，不需要 `pip install` 任何东西**——后端只用标准库
 - 引擎副本要在 `engine/webnovel-focus/`（仓库里已经带了）
-- 一个 OpenAI 兼容的接口地址、模型名和 Key——AI 复核是必经的一层，配不齐就出不了书
+- 一个 OpenAI 兼容的接口地址、模型名和 Key——AI 标定是必经的一层，配不齐就出不了书
 
 ## 跑起来
 
@@ -40,23 +40,25 @@ python app/server.py --host 0.0.0.0     # 对局域网开放（默认只开本�
 `启动.bat`。`启动.bat` 探到 8765 上有人在跑时只把页面打开、不会换进程——旧代码会一直留在
 内存里，改了也白改。阅读器页进来自会探一次服务版本，遇到旧版会直接把这句话写在页面上。
 
-三个页面：
+四个页面：
 
 | 地址 | 是什么 |
 |---|---|
 | `/` | 首页，介绍 |
-| `/app` | 工作台：选书 → 体检抽查 → 出整本（含必经的 AI 复核）→ 导出 EPUB |
-| `/read` | 阅读器，不落盘，直接把一本 TXT / EPUB 摊开读 |
+| `/shelf` | 书架：这台机器上放过的书，接着读 / 读深浅版 / 导出 / 改名 / 删除 |
+| `/app` | 工作台：选书 → 体检抽查 → 出整本（含必经的 AI 标定）→ 导出 EPUB |
+| `/read` | 阅读器，把一本 TXT / EPUB 摊开读；从这里拖进来的书会落盘入架 |
 
 ## 目录
 
 ```
-app/            自有应用层：后端 + 三个页面
+app/            自有应用层：后端 + 四个页面
   server.py     本地后端，一个文件，只用标准库
   engine.py     包住引擎的壳（只通过命令行调它，从不写进引擎目录）
   bookread.py   阅读器的解析层（TXT 编码回退 / EPUB 按书脊取正文）
-  ai_layer.py   AI 复核层（只把模糊带的段落发给你自己的模型）
+  ai_layer.py   AI 标定层（抽样、五分类、桶后验、定向升级）
   ui.html       工作台
+  shelf.html    书架
   reader.html   阅读器
 engine/         webnovel-focus 引擎的只读副本
 android/        Android 端：把 engine/ 那份引擎打进 APK，判定整个跑在手机里
@@ -109,20 +111,42 @@ GitHub 会把提交时间转成 UTC、偏移量强制写成 `+0000`，而本机�
 |---|---|---|
 | GET | `/api/health` | 探活：`{"ok":true,"engine":"<路径>","readonly":true,"tiers":true}`（`tiers` = 这版服务能读出分层标记） |
 | GET | `/api/state?job=` | 进度与产物，见下 |
+| GET | `/api/calibration?job=` | 标定结果（模型、种子、样本 id、桶表和指标） |
 | GET | `/api/jobs` | 做过的书，新的在前 |
-| GET | `/api/skill-rules` | AI 复核实际使用的判定标准（纯文本） |
+| GET | `/api/library` | 书架：同一本书只出一条 `{id,name,kind,kinds,copies,added,state,progress,reader,files}`，新的在前 |
+| GET | `/api/read-book?job=` | 按号打开书架上的书：有判定结果就返回带深浅档位的正文，否则返回原文（书架点击用） |
+| GET | `/api/read-source?job=` | 只把源文件正文读回来（兼容旧客户端） |
+| GET | `/api/skill-rules` | AI 标定实际使用的五分类提示词（纯文本） |
 | POST | `/api/upload` | body = 文件字节，header `x-filename`；返回 job + 抽查页 |
-| POST | `/api/read` | body = 文件字节，header `x-filename`；返回分好章的正文，不落盘 |
-| POST | `/api/build` | `{job, ai:{endpoint,model,key,lo,hi,max}}`（三样缺一条回 400），后台跑 |
+| POST | `/api/read` | body = 文件字节，header `x-filename`；返回分好章的正文。带 `?shelf=1` 时同时落盘入架，返回里多一个 `job` |
+| POST | `/api/build` | `{job, ai:{endpoint,model,key,max}}`（三样缺一条回 400；`lo/hi` 仅兼容旧客户端，`max` 是抽样+升级总预算，默认 800） |
 | POST | `/api/cancel` | `{job}` 取消正在跑的任务 |
 | POST | `/api/export` | `{job, preset, lever}`，后台打包 EPUB |
 | POST | `/api/job-delete` | `{job}` 删掉这本书的整个工作目录 |
+| POST | `/api/library/progress` | `{job, chapter, ratio}` 记续读位置（写进这本书的 meta.json） |
+| POST | `/api/library/rename` | `{job, name}` 只改显示名，不动目录 |
 | POST | `/api/ai-test` | `{endpoint, model, key}` 测一次连接 |
 | GET | `/work/<job>/...` | 抽查页 / 阅读版 / EPUB 下载（`?dl=1` 走下载） |
 | GET | `/assets/...` | 落地页图片 |
 
 `/api/upload` 和 `/api/read` 靠 `x-filename` 认类型，**中文文件名要先
 percent-encode**（网页端用的就是 `encodeURIComponent(file.name)`）。
+
+书架上的每本书，`state` 从产物派生、不另存：只有源文件 = `source`（未判定）；
+有阅读版 = `judged`（已判定）；`out/` 里有 `.epub` = `exported`（已导出）。
+这三个取值是网页端与 Android 端共用的书架语义。
+
+网页端书架按内容身份归并：同一本书重复导入会复用已有 `job`；换成 TXT / EPUB
+另一种格式再导入，也会按 `book_key` 合并成一条，不新增记录。
+
+Android 原生书架按摊平后的 `src.txt` 内容哈希去重：同一份内容重复导入会复用已有
+记录，但不做 TXT / EPUB 的跨格式身份匹配。工作台只导出 EPUB，阅读器里直接打开的
+TXT 是未经工作台处理的原文，所以移动端不依赖跨格式合并。
+
+历史遗留的重复目录也会在读取书架时按各自的内容标识合并成一条：`copies` 是合并了
+几份，网页端还额外返回 `kinds`（这些副本出现过的格式）。门面书自己还没有续读位置时，
+`progress` 从旧副本里取读得最远的那个；门面书已经记过位置时以门面为准，允许读者
+往回重读。删除和改名会作用到整组副本上，避免删掉门面后旧记录又冒出来。
 
 ## 给 Android 端
 
@@ -141,11 +165,14 @@ percent-encode**（网页端用的就是 `encodeURIComponent(file.name)`）。
   "done": false,
   "error": null,
   "result": { "...": "见下" },
-  "progress": { "total": 24, "done": 7, "reviewed": 112, "failed": 0 }
+  "progress": { "stage": "ask", "total": 24, "done": 7, "sampled": 50,
+                "fitted": 0, "escalated": 0, "reviewed": 48, "failed": 0 }
 }
 ```
 
 跑起来的时候还会多一个 `started`（unix 秒），用来显示已用时间。
+AI 标定期间 `stage` 依次为 `sample → ask → fit → escalate → apply`；顶层
+`phase` 仍保持 `ai`，避免旧客户端把新阶段误判成“已经结束”。
 
 `phase` 的全部取值：
 
@@ -155,7 +182,7 @@ percent-encode**（网页端用的就是 `encodeURIComponent(file.name)`）。
 | `doctor` | 正在体检 | 是 |
 | `checked` | 等你确认抽查页 | 否 |
 | `build` | 正在判读整本 | 是 |
-| `ai` | 正在做 AI 复核 | 是 |
+| `ai` | 正在做 AI 标定/升级 | 是 |
 | `render` | 正在重渲 | 是 |
 | `export` | 正在打包 | 是 |
 | `ready` | 好了 | 否 |
@@ -199,15 +226,14 @@ percent-encode**（网页端用的就是 `encodeURIComponent(file.name)`）。
 ## 隐私
 
 - 判读全程在本地，书不上传
-- AI 复核只把规则判不准的那一段（默认 0.30~0.70 的模糊带）发给你自己填的接口，
-  其余部分一步不落地留在本机
+- AI 标定只把确定性抽样段和预算内需要升级的段发给你自己填的接口，其余部分一步不落地留在本机
 - API Key 只存在浏览器 `localStorage` 里，不写进任何文件、不进日志
-- AI 复核用的判定标准来自引擎 skill 自己的 `references/`（只读），不是另编一套
+- AI 标定使用固定的五分类提示词和锚点；系统提示词哈希、模型、端点、种子、样本 id 和桶表都会写进 `calibration.json`
 
 ## 已知限制
 
 - 只吃 TXT 和 EPUB。PDF 要先抽成文本，这层没做
-- **AI 复核必须有可用的模型接口**：这一层是必经的，接口不通或额度用尽就不出书，
+- **AI 标定必须有可用的模型接口**：这一层是必经的，接口不通或额度用尽就不出书，
   不会静默退回纯规则
 - **PDF 导出已经拿掉**：那要靠本机浏览器的无头打印，几十万字的大书会把进程拖死
 - 默认只听 `127.0.0.1`。要给别人用就 `--host 0.0.0.0`，别开到公网

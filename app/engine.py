@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -26,6 +27,11 @@ AI_PY = ROOT / "app" / "ai_layer.py"
 PY = sys.executable or "python"
 
 SAFE_NAME = re.compile(r"[^0-9A-Za-z_\-\.\u4e00-\u9fff]+")
+_CHAPTER_TITLE = re.compile(
+    r"(?:第[0-9零一二三四五六七八九十百千万两]+[章节回卷篇部]"
+    r"|Chapter\s+\d+|Part\s+\d+|\d+\s*[、.．])"
+)
+BOOK_KEY_VERSION = 3
 
 # 正在跑的子进程，按任务号登记。取消任务时靠它把进程掐掉——
 # 一次处理最长要跑一小时（三百多万字的大书），不给取消就只能干等。
@@ -94,12 +100,54 @@ def _run(args: list[str], timeout: int = 1800, env: dict | None = None,
                 PROCS.pop(job, None)
 
 
-def new_job(original_name: str) -> tuple[str, Path]:
+def kind_of(name: str) -> str:
+    """这本是从什么格式进来的。EPUB 也要认——书架上看得出原样。"""
+    return "epub" if str(name).lower().endswith(".epub") else "txt"
+
+
+def _write_meta(d: Path, meta: dict) -> None:
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+
+def _norm_identity(text: str) -> str:
+    """书身份只认正文，不认空白和排版差异。"""
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def book_key_of(book: dict, name: str = "") -> str:
+    """同一本书跨 TXT / EPUB 的稳定指纹。
+
+    引擎导出的 EPUB 会比源 TXT 多一个封面/参数页，章节边界也可能合并或拆分。
+    所以先只认像章号的标题，再看尾部章节标题和正文样本，不把精确章节数写进身份。
+    这样同一本书换个格式导入不会变成新书，不同卷/不同内容的书也不会因为同名被误并。
+    """
+    chapters = book.get("chapters") or []
+    body = [c for c in chapters if _CHAPTER_TITLE.search(str(c.get("title") or ""))] or chapters
+    title = _norm_identity(book.get("title") or safe_stem(name))
+    tails = "\n".join(_norm_identity(c.get("title") or "") for c in body[-3:])
+    picks = body[-5:-4] + body[-1:]
+    sample = "\n".join(
+        _norm_identity(p)
+        for c in picks
+        for p in (c.get("paras") or [])[:2]
+    )
+    raw = f"{title}\n{tails}\n{sample}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def new_job(original_name: str, *, book_key: str = "", source_hash: str = "",
+            kind: str = "") -> tuple[str, Path]:
     jid = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:5]
     d = WORK / jid
     (d / "out").mkdir(parents=True, exist_ok=True)
-    meta = {"job": jid, "name": safe_stem(original_name), "created": time.time()}
-    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    meta = {"job": jid, "name": safe_stem(original_name), "created": time.time(),
+            "kind": kind or kind_of(original_name)}
+    if book_key:
+        meta["book_key"] = book_key
+        meta["book_key_version"] = BOOK_KEY_VERSION
+    if source_hash:
+        meta["source_hash"] = source_hash
+    _write_meta(d, meta)
     return jid, d
 
 
@@ -120,7 +168,8 @@ def save_source(d: Path, filename: str, data: bytes) -> Path:
     src.write_bytes(data)
     meta = read_meta(d)
     meta["src"] = src.name
-    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    meta["source_hash"] = hashlib.sha256(data).hexdigest()
+    _write_meta(d, meta)
     return src
 
 
@@ -140,7 +189,7 @@ def out_of(d: Path) -> Path:
 
 
 def reader_of(d: Path) -> Path | None:
-    """阅读版在哪个文件：AI 复核重渲过是 index.html，纯规则出的是 book.html。"""
+    """阅读版在哪个文件：AI 标定重渲过是 index.html，纯规则出的是 book.html。"""
     out = out_of(d)
     for name in ("index.html", "book.html"):
         f = out / name
@@ -167,8 +216,119 @@ def build(d: Path, src: Path, mode: str = "auto", job: str | None = None) -> tup
 def render(d: Path, job: str | None = None) -> tuple[bool, str]:
     """AI 层改过 analyzed.json 之后，用同一份数据重渲一次 HTML。"""
     out = out_of(d)
-    return _run([str(RENDER_PY), str(out / "analyzed.json"), "-o", str(out / "index.html"),
-                 "--mode", "auto"], 1800, job=job)
+    # render.py 在分章模式下把 -o 的参数当目录。build 也是传 out/；如果这里
+    # 传 out/index.html，会生成 out/index/，而 reader_of 仍会打开旧的 index.html。
+    # 单文件模式则必须传具体的 book.html 文件。
+    if (out / "index.html").is_file():
+        target = out
+    elif (out / "book.html").is_file():
+        target = out / "book.html"
+    else:
+        target = out
+    ok, log = _run([str(RENDER_PY), str(out / "analyzed.json"), "-o", str(target),
+                    "--mode", "auto"], 1800, job=job)
+    if ok:
+        _inject_keep_bridge(d, target)
+    return ok, log
+
+
+def _keep_values(doc: dict, page: str) -> list[bool]:
+    """Return the keep flags for one generated chapter page."""
+    page = Path(page).name
+    if page == "book.html":
+        return [bool(p.get("keep")) for ch in doc.get("chapters", [])
+                for p in ch.get("paragraphs", []) if p.get("kind") != "separator"]
+    match = re.fullmatch(r"ch(\d+)\.html", page)
+    if not match:
+        return []
+    wanted = int(match.group(1))
+    for ci, ch in enumerate(doc.get("chapters", [])):
+        if int(ch.get("index", ci + 1)) == wanted:
+            return [bool(p.get("keep")) for p in ch.get("paragraphs", [])
+                    if p.get("kind") != "separator"]
+    return []
+
+
+def _inject_keep_bridge(d: Path, target: Path) -> None:
+    """Add a small app-layer persistence bridge to generated reader pages.
+
+    The engine template stays untouched. Paragraph order is the same as the
+    analyzed chapter order, so the bridge only needs chapter/page + index.
+    """
+    try:
+        doc = json.loads((out_of(d) / "analyzed.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    pages = [target] if target.is_file() else sorted(target.glob("ch*.html"))
+    for page in pages:
+        values = _keep_values(doc, page.name)
+        if not values:
+            continue
+        try:
+            html = page.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        script = (
+            '<script data-qs-keep-bridge="1">'
+            'const __qsJob=' + json.dumps(d.name) + ';'
+            'const __qsPage=' + json.dumps(page.name) + ';'
+            'const __qsInitialKeeps=' + json.dumps(values) + ';'
+            '(function(){'
+            'const ps=Array.from(document.querySelectorAll(".p"));'
+            'ps.forEach(function(p,i){if(__qsInitialKeeps[i])p.classList.add("keep");'
+            'p.addEventListener("click",function(){'
+            'const keep=p.classList.contains("keep");'
+            'fetch("/api/keep",{method:"POST",headers:{"content-type":"application/json"},'
+            'body:JSON.stringify({job:__qsJob,page:__qsPage,index:i,keep:keep})})'
+            '.catch(function(){try{localStorage.setItem("qs_keep:"+__qsJob+":"+__qsPage+":"+i,keep?"1":"0")}catch(e){}});'
+            '});});'
+            '})();'
+            '</script>'
+        )
+        marker = "data-qs-keep-bridge=\"1\""
+        if marker in html:
+            html = re.sub(r'<script data-qs-keep-bridge="1">[\s\S]*?</script>', script, html)
+        else:
+            html = html.replace("</body>", script + "</body>")
+        try:
+            page.write_text(html, encoding="utf-8")
+        except OSError:
+            pass
+
+
+def set_keep(d: Path, page: str, index: int, keep: bool) -> str:
+    """Persist a reader keep decision in analyzed.json and keeps.json."""
+    out = out_of(d)
+    analyzed = out / "analyzed.json"
+    doc = json.loads(analyzed.read_text(encoding="utf-8"))
+    page = Path(page).name
+    if page == "book.html":
+        paras = [p for ch in doc.get("chapters", []) for p in ch.get("paragraphs", [])
+                 if p.get("kind") != "separator"]
+        para = paras[index] if 0 <= index < len(paras) else None
+    else:
+        match = re.fullmatch(r"ch(\d+)\.html", page)
+        if not match:
+            raise ValueError("不认识的阅读页")
+        wanted = int(match.group(1))
+        chapter = next((ch for ci, ch in enumerate(doc.get("chapters", []))
+                        if int(ch.get("index", ci + 1)) == wanted), None)
+        paras = ([p for p in chapter.get("paragraphs", [])
+                  if p.get("kind") != "separator"] if chapter else [])
+        para = paras[index] if 0 <= index < len(paras) else None
+    if para is None:
+        raise ValueError("段落不存在")
+    para["keep"] = bool(keep)
+    para["keep_updated"] = time.time()
+    analyzed.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    sidecar = d / "keeps.json"
+    try:
+        keeps = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        keeps = {}
+    keeps[str(para.get("pid") or f"{page}:{index}")] = bool(keep)
+    sidecar.write_text(json.dumps(keeps, ensure_ascii=False), encoding="utf-8")
+    return str(para.get("pid") or "")
 
 
 def export(d: Path, preset: str = "balance", lever: str = "color",
@@ -182,20 +342,42 @@ def export(d: Path, preset: str = "balance", lever: str = "color",
     return ok, log, target
 
 
-def ai_review(d: Path, endpoint: str, model: str, key: str, lo: float, hi: float,
-              cap: int, dry: bool = False, progress: Path | None = None,
-              job: str | None = None) -> tuple[bool, str, dict]:
-    """只把模糊带的段落交给用户自己的模型复核，结果写回 analyzed.json。
+def _apply_keep_sidecar(d: Path) -> None:
+    """Reapply durable reader keeps after a fresh build/review."""
+    sidecar = d / "keeps.json"
+    analyzed = out_of(d) / "analyzed.json"
+    try:
+        keeps = json.loads(sidecar.read_text(encoding="utf-8"))
+        doc = json.loads(analyzed.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    changed = False
+    for chapter in doc.get("chapters", []):
+        for para in chapter.get("paragraphs", []):
+            pid = str(para.get("pid") or "")
+            if pid in keeps and bool(para.get("keep")) != bool(keeps[pid]):
+                para["keep"] = bool(keeps[pid])
+                changed = True
+    if changed:
+        analyzed.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
-    模型用的判定标准来自 skill 自己写的 references/（只读），不是另编一套。
+
+def review(d: Path, endpoint: str, model: str, key: str,
+           budget: int = 800, seed: int = 0, dry: bool = False,
+           progress: Path | None = None,
+           job: str | None = None) -> tuple[bool, str, dict]:
+    """标定 + 定向升级，结果写回 analyzed.json。
+
+    ``budget`` 是本轮 AI 总预算（抽样 + 升级），旧的 lo/hi 不再参与主流程。
     progress 给一个文件路径，AI 层会边跑边把进度写进去，服务端就能读出实时进度。
-    第三个返回值是这一层的统计（asked / reviewed / failed），最后一行 JSON 就是它——
-    ai_layer 单批失败是记在计数里、进程照样退 0，所以调用方得看 failed 才算数。
+    第三个返回值是这一层的统计；最后一行 JSON 就是它。单批失败会记在
+    failed 里，调用方必须看 failed 才能决定是否出书。
     """
+    _apply_keep_sidecar(d)
     args = [str(AI_PY), str(out_of(d) / "analyzed.json"),
             "--endpoint", endpoint or "https://api.openai.com/v1",
             "--model", model or "gpt-4o-mini",
-            "--lo", str(lo), "--hi", str(hi), "--max", str(cap)]
+            "--max", str(max(0, int(budget))), "--seed", str(int(seed))]
     if dry:
         args.append("--dry")
     env = {"WNF_AI_KEY": key or ""}
@@ -215,8 +397,16 @@ def ai_review(d: Path, endpoint: str, model: str, key: str, lo: float, hi: float
     return ok, log, stats
 
 
+def ai_review(d: Path, endpoint: str, model: str, key: str, lo: float, hi: float,
+              cap: int, dry: bool = False, progress: Path | None = None,
+              job: str | None = None) -> tuple[bool, str, dict]:
+    """兼容旧调用：lo/hi 忽略，cap 解释为总预算。"""
+    return review(d, endpoint, model, key, budget=cap, seed=0, dry=dry,
+                  progress=progress, job=job)
+
+
 def read_progress(d: Path) -> dict:
-    """AI 复核的实时进度（ai_layer 边跑边写 progress.json）。没跑过就是空。"""
+    """AI 标定的实时进度（ai_layer 边跑边写 progress.json）。没跑过就是空。"""
     try:
         return json.loads((d / "progress.json").read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -236,7 +426,7 @@ def ai_probe(endpoint: str, model: str, key: str) -> tuple[bool, str]:
 
 
 def skill_rules() -> str:
-    """AI 复核层实际喂给模型的判定标准（读自引擎副本，只读）。给页面透明展示用。"""
+    """AI 标定层实际使用的五分类提示词。给页面透明展示用。"""
     ok, log = _run([str(AI_PY), "--show-rules"], 60)
     return log if ok else ""
 
@@ -246,6 +436,67 @@ def read_meta(d: Path) -> dict:
         return json.loads((d / "meta.json").read_text(encoding="utf-8"))
     except Exception:
         return {"job": d.name, "name": d.name}
+
+
+def book_key_for_job(d: Path) -> str:
+    """旧书没有 book_key 时，按源文件补算一次并写回 meta.json。
+
+    只读接口也会走这里：第一次打开书架时把历史记录补齐，之后就不用再解析整本。
+    """
+    meta = read_meta(d)
+    key = str(meta.get("book_key") or "").strip()
+    try:
+        version = int(meta.get("book_key_version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    if key and version >= BOOK_KEY_VERSION:
+        return key
+    try:
+        src = source_of(d)
+        raw = src.read_bytes()
+        from bookread import read_book  # noqa: PLC0415
+        book = read_book(raw, src.name)
+        key = book_key_of(book, str(meta.get("name") or src.name))
+        meta["book_key"] = key
+        meta["book_key_version"] = BOOK_KEY_VERSION
+        meta.setdefault("source_hash", hashlib.sha256(raw).hexdigest())
+        _write_meta(d, meta)
+        return key
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def find_job(*, book_key: str = "", source_hash: str = "") -> Path | None:
+    """找已经入过架的同一本书：内容哈希或跨格式书身份命中都算。"""
+    matches: list[Path] = []
+    for d in WORK.glob("*"):
+        if not d.is_dir() or not (d / "meta.json").is_file():
+            continue
+        meta = read_meta(d)
+        digest = str(meta.get("source_hash") or "")
+        key = str(meta.get("book_key") or "")
+        if source_hash and not digest:
+            try:
+                src = source_of(d)
+                digest = hashlib.sha256(src.read_bytes()).hexdigest()
+            except Exception:  # noqa: BLE001
+                digest = ""
+        exact = bool(source_hash and digest == source_hash)
+        same_book = False
+        if book_key:
+            try:
+                version = int(meta.get("book_key_version") or 1)
+            except (TypeError, ValueError):
+                version = 1
+            if not key or version < BOOK_KEY_VERSION:
+                key = book_key_for_job(d)
+            if key == book_key:
+                same_book = True
+        if exact or same_book:
+            matches.append(d)
+    if not matches:
+        return None
+    return choose_canonical_job(matches)
 
 
 def tally(d: Path) -> dict:
@@ -287,3 +538,103 @@ def result_of(d: Path) -> dict:
         "prescan": f"/work/{d.name}/prescan.txt",
         "report": f"/work/{d.name}/out/report.txt",
     }
+
+
+def library_of(d: Path) -> dict:
+    """把一本书算成书架条目。状态从产物派生，不另存一份，免得两处对不上：
+    只有源文件 = source（未判定）；有阅读版 = judged（已判定）；out/ 里有 .epub = exported。"""
+    meta = read_meta(d)
+    reader = reader_of(d)
+    out = out_of(d)
+    files = [{"name": f.name, "url": f"/work/{d.name}/out/{f.name}",
+              "kb": round(f.stat().st_size / 1024)}
+             for f in sorted(out.glob("*.epub")) if f.is_file()]
+    state = "source"
+    if reader is not None:
+        state = "exported" if files else "judged"
+    return {
+        "id": d.name,
+        "name": meta.get("name") or d.name,
+        "kind": meta.get("kind") or "txt",
+        "added": meta.get("created") or d.stat().st_mtime,
+        "state": state,
+        "progress": meta.get("progress") or {},
+        "reader": f"/work/{d.name}/out/{reader.name}" if reader else "",
+        "files": files,
+    }
+
+
+def best_progress(ds: list[Path]) -> dict:
+    """同一本书的几份历史记录里，取读得最远的那个位置。"""
+    best: dict = {}
+    for d in ds:
+        p = read_meta(d).get("progress") or {}
+        if not isinstance(p, dict):
+            continue
+        try:
+            chapter = int(p.get("chapter", -1))
+            ratio = min(1.0, max(0.0, float(p.get("ratio", 0.0))))
+        except (TypeError, ValueError):
+            continue
+        if chapter < 0:
+            continue
+        if not best or (chapter, ratio) > (int(best["chapter"]), float(best["ratio"])):
+            best = {"chapter": chapter, "ratio": ratio}
+    return best
+
+
+def state_of(d: Path) -> str:
+    reader = reader_of(d)
+    if reader is None:
+        return "source"
+    return "exported" if any(out_of(d).glob("*.epub")) else "judged"
+
+
+def choose_canonical_job(ds: list[Path]) -> Path:
+    """一份书架条目只留一个 job 做门面，并把选择固定下来。
+
+    优先已导出、已判定，再看续读位置和创建时间。选定后写 canonical_book，
+    这样读者把进度往回调时，门面不会又切到另一份旧副本上。
+    """
+    flagged = [d for d in ds if read_meta(d).get("canonical_book")]
+    if flagged:
+        return max(flagged, key=lambda d: float(read_meta(d).get("created") or 0))
+
+    ranks = {"source": 1, "judged": 2, "exported": 3}
+
+    def rank(d: Path) -> tuple[int, int, float, float]:
+        meta = read_meta(d)
+        p = meta.get("progress") or {}
+        try:
+            chapter = int(p.get("chapter", -1))
+            ratio = float(p.get("ratio", 0.0))
+        except (TypeError, ValueError):
+            chapter, ratio = -1, 0.0
+        return (ranks.get(state_of(d), 0), chapter, ratio,
+                float(meta.get("created") or 0.0))
+
+    best = max(ds, key=rank)
+    meta = read_meta(best)
+    meta["canonical_book"] = True
+    try:
+        _write_meta(best, meta)
+    except OSError:
+        pass
+    return best
+
+
+def set_progress(d: Path, chapter: int, ratio: float) -> dict:
+    """书架续读要的那点位置：第几章、章内比例。写进 meta.json，跟书一起留着。"""
+    meta = read_meta(d)
+    prog = {"chapter": max(0, int(chapter)), "ratio": min(1.0, max(0.0, float(ratio)))}
+    meta["progress"] = prog
+    _write_meta(d, meta)
+    return prog
+
+
+def rename_job(d: Path, name: str) -> str:
+    """只改显示名，不动文件名与目录——产物路径全靠目录名，改了会全断。"""
+    meta = read_meta(d)
+    meta["name"] = str(name).strip()[:80] or meta.get("name") or d.name
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return meta["name"]

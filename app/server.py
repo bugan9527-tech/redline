@@ -15,20 +15,22 @@
     GET  /app                       工作台
     GET  /read                      阅读器
     POST /api/upload                body = TXT / EPUB 字节；header x-filename；返回 job + 抽查页
-    POST /api/build                 {job, ai:{endpoint,model,key,lo,hi,max}}  后台跑；三样缺一条回 400
+    POST /api/build                 {job, ai:{endpoint,model,key,max,seed}}  后台跑；max 为总预算
     POST /api/export                {job, preset, lever}  打包 EPUB（后台跑）
     POST /api/job-delete            {job}  删掉这本书的整个工作目录
     POST /api/cancel                {job}  取消正在跑的任务（掐掉引擎子进程）
     POST /api/ai-test               {endpoint, model, key}  测一次连接能不能用
     POST /api/read                  body = TXT/EPUB 字节；header x-filename；返回分好章的正文
     GET  /api/state?job=            进度与产物
-    GET  /api/skill-rules           AI 复核实际使用的判定标准（只读自 skill）
+    GET  /api/calibration?job=      标定结果（脱敏）
+    GET  /api/skill-rules           AI 实际使用的五分类提示词
     GET  /work/<job>/...            抽查页 / 阅读版 / EPUB 下载
     GET  /assets/...                落地页图片
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import sys
@@ -38,7 +40,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import engine as E  # noqa: E402
@@ -48,6 +50,7 @@ ROOT = E.ROOT
 WORK = E.WORK
 UI = Path(__file__).resolve().parent / "ui.html"
 READER = Path(__file__).resolve().parent / "reader.html"
+SHELF = Path(__file__).resolve().parent / "shelf.html"
 MAX_UPLOAD = 80 * 1024 * 1024          # 一本书不该超过 80 MB
 SERVE_EXT = {".html", ".txt", ".json", ".epub", ".jpg", ".jpeg", ".png", ".css", ".js"}
 LOG_KEEP = 60                          # 页面上最多显示这么多行日志
@@ -166,6 +169,120 @@ def list_jobs(limit: int = 50) -> list[dict]:
     return items[:limit]
 
 
+def library(limit: int = 200) -> list[dict]:
+    """书架：按书身份归并 work/ 里的目录，同一个 story 只出一条。
+
+    老版本每次导入都会新建一个 job；这里在读取时补算身份，把历史重复记录收成
+    一条。门面 job 优先选有判定/导出的那份，续读位置取同组里读得最远的那份。
+    """
+    groups: dict[str, list[Path]] = {}
+    for d in WORK.glob("*"):
+        if not d.is_dir() or not (d / "meta.json").is_file():
+            continue
+        key = E.book_key_for_job(d) or f"job:{d.name}"
+        groups.setdefault(key, []).append(d)
+
+    items = []
+    for ds in groups.values():
+        d = E.choose_canonical_job(ds)
+        item = E.library_of(d)
+        item["copies"] = len(ds)
+        item["kinds"] = sorted({str(E.read_meta(x).get("kind") or "txt") for x in ds})
+        # 门面 job 一旦自己记了位置，就以它为准：读者可以往回重读，不能被
+        # 旧副本里那个更靠后的历史位置永远拽回去。门面还没读过时，才从旧副本里
+        # 取一个最靠后的位置作为迁移起点。
+        item["progress"] = item.get("progress") or E.best_progress(ds) or {}
+        item["added"] = max(float(E.read_meta(x).get("created") or 0) for x in ds) or item["added"]
+        items.append(item)
+    items.sort(key=lambda it: it["added"] or 0, reverse=True)
+    return items[:limit]
+
+
+def save_book_from_raw(name: str, raw: bytes,
+                       book: dict | None = None) -> tuple[str, Path, bool]:
+    """把一份上传字节落成一本书：EPUB 先摊平成章节分明的 TXT（引擎只吃 TXT）。
+
+    先按内容身份找已有 job；同一本书重复拖进来时复用原目录，不再往书架上加新书。
+    """
+    low = name.lower()
+    if not (low.endswith(".txt") or low.endswith(".epub")):
+        raise ValueError("只吃 TXT 和 EPUB。")
+    book = book or B.read_book(raw, name)
+    if book.get("kind") == "epub":
+        data = B.to_txt(book).encode("utf-8")
+    else:
+        data = raw
+    digest = hashlib.sha256(data).hexdigest()
+    key = E.book_key_of(book, name)
+    existing = E.find_job(book_key=key, source_hash=digest)
+    if existing is not None:
+        return existing.name, existing, True
+    job, d = E.new_job(name, book_key=key, source_hash=digest,
+                       kind=str(book.get("kind") or E.kind_of(name)))
+    E.save_source(d, name, data)
+    return job, d, False
+
+
+def judged_book(d: Path) -> dict | None:
+    """按 analyzed.json 还原阅读器要的正文与深浅档位。
+
+    引擎生成的阅读页把档位写进几百个 HTML 分片里；阅读器只需要正文和档位，
+    从判定后的 analyzed.json 取一次就行。没有判定结果时返回 None，由调用方退回原文。
+    """
+    target = E.out_of(d) / "analyzed.json"
+    if not target.is_file():
+        return None
+    sys.path.insert(0, str(E.ENGINE / "scripts"))
+    from tiers import tier_of  # noqa: PLC0415
+
+    try:
+        doc = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    chapters = []
+    for ch in doc.get("chapters") or []:
+        paras, tiers = [], []
+        for para in ch.get("paragraphs") or []:
+            kind = str(para.get("kind") or "body")
+            if kind == "separator":       # 分隔符在渲染页里是分隔线，不是正文
+                continue
+            text = str(para.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                score = float(para.get("score") or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            paras.append(text)
+            tiers.append(tier_of(kind, score))
+        title = str(ch.get("title") or "").strip()
+        if not paras and not title:
+            continue
+        chapters.append({"title": title, "paras": paras, "tiers": tiers})
+    if not chapters:
+        return None
+    return {"title": "", "chapters": chapters,
+            "chars": sum(len(p) for ch in chapters for p in ch["paras"])}
+
+
+def read_job_book(d: Path) -> dict:
+    """书架点开一本：判定过的读深浅版，没判定过的读原文。"""
+    meta = E.read_meta(d)
+    book = judged_book(d)
+    if book is None:
+        src = E.source_of(d)
+        book = B.read_book(src.read_bytes(), src.name)
+        view = "source"
+    else:
+        view = "judged"
+    book["ok"] = True
+    book["job"] = d.name
+    book["view"] = view
+    book["name"] = meta.get("name") or book.get("title") or d.name
+    book["kind"] = meta.get("kind") or book.get("kind") or "txt"
+    return book
+
+
 # ---------- 后台任务 ----------
 
 def task_build(job: str, ai: dict) -> None:
@@ -185,23 +302,23 @@ def task_build(job: str, ai: dict) -> None:
         if not ok:
             raise RuntimeError("生成阅读版失败，看日志里的最后几行。")
 
-        # AI 复核是必经的一层，没有「不接」这条分支：接口没配好在 /api/build 那关就被拦下了。
-        # 复核没跑成就出错，不静默退回纯规则——那样等于把这一层悄悄抽掉了。
+        # AI 标定是必经的一层，没有「不接」这条分支：接口没配好在 /api/build 那关就被拦下了。
+        # 标定没跑成就出错，不静默退回纯规则——那样等于把这一层悄悄抽掉了。
         set_state(job, phase="ai", progress={})
-        lo = float(ai.get("lo") or 0.3)
-        hi = float(ai.get("hi") or 0.7)
-        cap = int(ai.get("max") or 400)
-        review_ok, review_log, stats = E.ai_review(
-            d, ai.get("endpoint", ""), ai.get("model", ""), ai.get("key", ""), lo, hi, cap,
-            progress=d / "progress.json", job=job)
+        # lo/hi 只保留为旧客户端的兼容字段；新口径把 max 解释为总预算。
+        budget = int(ai.get("max") or 800)
+        seed = int(ai.get("seed") or 0)
+        review_ok, review_log, stats = E.review(
+            d, ai.get("endpoint", ""), ai.get("model", ""), ai.get("key", ""),
+            budget=budget, seed=seed, progress=d / "progress.json", job=job)
         if job in CANCEL:
             return
         log_line(job, review_log)
         if not review_ok:
-            raise RuntimeError("AI 复核这一层没跑成，这次不出书。看日志里的最后几行。")
+            raise RuntimeError("AI 标定这一层没跑成，这次不出书。看日志里的最后几行。")
         if stats.get("failed"):
             raise RuntimeError(
-                f"AI 复核有 {stats['failed']} 批没跑成（网络或额度的问题），这次不出书；"
+                f"AI 标定有 {stats['failed']} 批没跑成（网络、额度或返回契约的问题），这次不出书；"
                 "确认接口能用之后重新出整本。")
         # 复核改的是 analyzed.json，重渲一次让 HTML 跟上
         set_state(job, phase="render")
@@ -258,7 +375,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(body)))
         self.send_header("cache-control", "no-store")
         if download:
-            self.send_header("content-disposition", f'attachment; filename="{path.name}"')
+            # HTTP headers are latin-1 on the wire. Keep the classic filename ASCII-safe
+            # and put the real (often Chinese) name in RFC 5987 filename*.
+            fallback = "download" + (path.suffix or "")
+            encoded = quote(path.name, safe="")
+            self.send_header(
+                "content-disposition",
+                f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{encoded}',
+            )
         self.end_headers()
         self.wfile.write(body)
 
@@ -326,11 +450,42 @@ class Handler(BaseHTTPRequestHandler):
                                    "tiers": True})
         if path == "/api/skill-rules":
             text = E.skill_rules()
-            return self.send_text(text or "（没读到判定标准，AI 复核会用内置的默认口径）")
+            return self.send_text(text or "（没读到判定标准，AI 标定会用内置的默认口径）")
         if path in ("/app", "/app/"):
             return self.send_file(UI)
         if path in ("/read", "/read/"):
             return self.send_file(READER)
+        if path in ("/shelf", "/shelf/"):
+            return self.send_file(SHELF)
+        if path == "/api/library":
+            return self.send_json({"books": library()})
+        if path == "/api/read-book":
+            # 书架点开一本书：有判定结果就带上深浅档位，否则退回原文。
+            job = (q.get("job") or [""])[0]
+            d = self.job_path(job)
+            if d is None:
+                return
+            try:
+                return self.send_json(read_job_book(d))
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(400, f"读不出来：{exc}")
+        if path == "/api/read-source":
+            # 书架点「继续读原书」：从这本的源文件把正文读回来（工作台那份 TXT）。
+            job = (q.get("job") or [""])[0]
+            d = self.job_path(job)
+            if d is None:
+                return
+            try:
+                src = E.source_of(d)
+                book = B.read_book(src.read_bytes(), src.name)
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(400, f"读不出来：{exc}")
+            meta = E.read_meta(d)
+            book["ok"] = True
+            book["job"] = job
+            book["name"] = meta.get("name") or book.get("title") or job
+            book["kind"] = meta.get("kind") or book.get("kind") or "txt"
+            return self.send_json(book)
         if path == "/api/state":
             job = (q.get("job") or [""])[0]
             d = self.job_path(job)
@@ -343,6 +498,18 @@ class Handler(BaseHTTPRequestHandler):
             out["result"] = (st or {}).get("result") or E.result_of(d)
             out["progress"] = E.read_progress(d)
             return self.send_json(out)
+        if path == "/api/calibration":
+            job = (q.get("job") or [""])[0]
+            d = self.job_path(job)
+            if d is None:
+                return
+            target = d / "calibration.json"
+            if not target.is_file():
+                return self.fail(404, "这本还没有标定结果")
+            try:
+                return self.send_json(json.loads(target.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                return self.fail(500, "标定结果读不出来")
         if path == "/api/jobs":
             return self.send_json({"jobs": list_jobs()})
         if path.startswith("/work/"):
@@ -373,18 +540,23 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(n)
             name = unquote(self.headers.get("x-filename") or "book.txt")
             low = name.lower()
-            if low.endswith(".txt"):
-                data = raw
-            elif low.endswith(".epub"):
-                try:
-                    # 引擎只吃 TXT，先把 EPUB 摊平成章节分明的文本
-                    data = B.to_txt(B.read_book(raw, name)).encode("utf-8")
-                except Exception as exc:  # noqa: BLE001
-                    return self.fail(400, f"这个 EPUB 读不出来：{exc}")
-            else:
+            if not (low.endswith(".txt") or low.endswith(".epub")):
                 return self.fail(400, "只吃 TXT 和 EPUB。PDF 要先抽成文本，这层还没做。")
-            job, d = E.new_job(name)
-            src = E.save_source(d, name, data)
+            try:
+                job, d, reused = save_book_from_raw(name, raw)
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(400, f"这个文件读不出来：{exc}")
+            if phase_now(d) in BUSY_PHASES:
+                return self.fail(409, "这本书已经在处理，去工作台看进度。")
+            confirm = d / "confirm" / "book.html"
+            if confirm.is_file():
+                phase = phase_on_disk(d)
+                set_state(job, phase=phase, done=phase == "ready", error=None,
+                          result=E.result_of(d))
+                return self.send_json({"job": job, "phase": phase,
+                                       "confirm": E.result_of(d)["confirm"],
+                                       "reused": reused})
+            src = E.source_of(d)
             set_state(job, phase="doctor", done=False, error=None)
             ok, log, confirm = E.doctor(d, src, job=job)
             log_line(job, log)
@@ -392,7 +564,9 @@ class Handler(BaseHTTPRequestHandler):
                 set_state(job, phase="error", done=True, error="体检 / 抽查失败，看日志。")
                 return self.send_json({"job": job, "phase": "error", "log": [log[-1200:]]}, 500)
             set_state(job, phase="checked", done=False, result=E.result_of(d))
-            return self.send_json({"job": job, "phase": "checked", "confirm": E.result_of(d)["confirm"]})
+            return self.send_json({"job": job, "phase": "checked",
+                                   "confirm": E.result_of(d)["confirm"],
+                                   "reused": reused})
 
         if path == "/api/read":
             n = int(self.headers.get("content-length") or 0)
@@ -402,12 +576,51 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(413, "文件超过 80 MB")
             raw = self.rfile.read(n)
             name = unquote(self.headers.get("x-filename") or "book.txt")
+            # 默认纯解析、不落盘（Android 端与老客户端还走这条路）；带 shelf=1 才落盘入架，
+            # 这是网页端阅读器拖文件进来的那条——书要留在书架上，下次不用重选。
+            shelf = (parse_qs(urlparse(self.path).query).get("shelf") or [""])[0] == "1"
             try:
                 book = B.read_book(raw, name)
             except Exception as exc:  # noqa: BLE001
                 return self.fail(400, f"读不出来：{exc}")
             book["ok"] = True
+            if shelf:
+                try:
+                    job, _, reused = save_book_from_raw(name, raw, book)
+                except Exception as exc:  # noqa: BLE001
+                    return self.fail(400, f"{exc}")
+                book["job"] = job
+                book["reused"] = reused
             return self.send_json(book)
+
+        if path == "/api/library/progress":
+            body = self.read_json()
+            d = self.job_path(body.get("job") or "")
+            if d is None:
+                return
+            try:
+                prog = E.set_progress(d, body.get("chapter") or 0, body.get("ratio") or 0.0)
+            except (TypeError, ValueError):
+                return self.fail(400, "位置参数不对")
+            return self.send_json({"ok": True, "job": d.name, "progress": prog})
+
+        if path == "/api/library/rename":
+            body = self.read_json()
+            d = self.job_path(body.get("job") or "")
+            if d is None:
+                return
+            key = E.book_key_for_job(d)
+            targets = [d]
+            if key:
+                targets = [x for x in WORK.glob("*")
+                           if x.is_dir() and (x / "meta.json").is_file()
+                           and E.book_key_for_job(x) == key]
+            name = E.rename_job(d, body.get("name") or "")
+            for x in targets:
+                if x != d:
+                    E.rename_job(x, name)
+            return self.send_json({"ok": True, "job": d.name, "name": name,
+                                   "copies": len(targets)})
 
         if path == "/api/ai-test":
             body = self.read_json()
@@ -423,17 +636,40 @@ class Handler(BaseHTTPRequestHandler):
             if self.job_path(job) is None:
                 return
             ai = body.get("ai") or {}
-            # AI 复核是必须的一层，不是可选开关：三样缺一条就不给出书。
+            # AI 标定是必须的一层，不是可选开关：三样缺一条就不给出书。
             if not (str(ai.get("endpoint") or "").strip()
                     and str(ai.get("model") or "").strip()
                     and str(ai.get("key") or "").strip()):
-                return self.fail(400, "AI 复核是必须的一层：接口地址、模型名、Key 都填上才出书。")
+                return self.fail(400, "AI 标定是必须的一层：接口地址、模型名、Key 都填上才出书。")
             if STATE.get(job, {}).get("phase") in BUSY_PHASES:
                 return self.fail(409, "已经在跑了")
             CANCEL.discard(job)              # 上一次取消过的话，这次重新算数
             set_state(job, phase="build", done=False, error=None)
             threading.Thread(target=task_build, args=(job, ai), daemon=True).start()
             return self.send_json({"job": job, "phase": "build", "started": True})
+
+        if path == "/api/keep":
+            body = self.read_json()
+            job = body.get("job") or ""
+            d = self.job_path(job)
+            if d is None:
+                return
+            page = str(body.get("page") or "")
+            try:
+                index = int(body.get("index"))
+            except (TypeError, ValueError):
+                return self.fail(400, "段落序号不对")
+            if not page or index < 0:
+                return self.fail(400, "阅读页或段落序号不对")
+            try:
+                pid = E.set_keep(d, page, index, bool(body.get("keep")))
+            except ValueError as exc:
+                return self.fail(400, str(exc))
+            ok, log = E.render(d, job=job)
+            if not ok:
+                return self.fail(500, "手动保留已保存，但阅读版重渲失败")
+            return self.send_json({"ok": True, "job": job, "pid": pid,
+                                   "keep": bool(body.get("keep"))})
 
         if path == "/api/export":
             body = self.read_json()
@@ -470,16 +706,26 @@ class Handler(BaseHTTPRequestHandler):
             d = self.job_path(job)
             if d is None:
                 return
-            if STATE.get(job, {}).get("phase") in BUSY_PHASES:
+            key = E.book_key_for_job(d)
+            targets = [d]
+            if key:
+                targets = [x for x in WORK.glob("*")
+                           if x.is_dir() and (x / "meta.json").is_file()
+                           and E.book_key_for_job(x) == key]
+            if any(STATE.get(x.name, {}).get("phase") in BUSY_PHASES for x in targets):
                 return self.fail(409, "这本书还在跑，等它停下来再删。")
             try:
-                E.remove_job(d)
+                for x in targets:
+                    E.remove_job(x)
             except Exception as exc:  # noqa: BLE001
                 return self.fail(500, f"删不掉：{exc}")
             with LOCK:
-                STATE.pop(job, None)
-            CANCEL.discard(job)
-            return self.send_json({"ok": True, "job": job, "jobs": list_jobs()})
+                for x in targets:
+                    STATE.pop(x.name, None)
+                    CANCEL.discard(x.name)
+            return self.send_json({"ok": True, "job": job,
+                                   "deleted": [x.name for x in targets],
+                                   "jobs": list_jobs()})
 
         return self.fail(404, "没有这个地址")
 

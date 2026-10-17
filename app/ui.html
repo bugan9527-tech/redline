@@ -74,7 +74,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 <div class="wrap">
   <header class="top">
     <a class="mark" href="/">深浅</a>
-    <nav><a href="/">回到首页</a><a href="/read">阅读器</a><a href="/api/health" target="_blank">引擎状态</a></nav>
+    <nav><a href="/">回到首页</a><a href="/shelf">书架</a><a href="/read">阅读器</a><a href="/api/health" target="_blank">引擎状态</a></nav>
   </header>
 
   <h1>放一本 TXT 或 EPUB 进来，读成深浅。</h1>
@@ -101,8 +101,8 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     </section>
 
     <section class="card">
-      <h2>二 · AI 复核（必须）</h2>
-      <p class="note">引擎本体是纯本地规则，判不准的那一段（默认 0.30~0.70）<b>必须</b>交给你的模型复核一遍——这一层是必经的，下面三项不配好就出不了书。喂给模型的判定标准，就是 <b>webnovel-focus 这份 skill 自己写的规则</b>，不是另编一套。</p>
+      <h2>二 · AI 标定（必须）</h2>
+      <p class="note">引擎先给每段规则分；AI 只做五类语义判定并引用原文，系统按规则签名标定，再只升级分歧大的桶。这一层是必经的，接口三项不配好就出不了书。</p>
       <div class="field">
         <label for="provider">用哪家（选一下，自动填地址和模型）</label>
         <select id="provider" style="background:var(--bg);border:0;padding:12px 14px;width:100%">
@@ -134,11 +134,15 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
         <label for="key">API Key</label>
         <input type="password" id="key" placeholder="sk-..." autocomplete="off">
       </div>
+      <div class="field">
+        <label for="budget">复核预算（段）</label>
+        <input type="number" id="budget" min="1" max="10000" step="1" value="800">
+      </div>
       <div class="row">
         <button class="btn btn-sm btn-quiet" id="aiTest" type="button">测试连接</button>
         <span class="status" id="aiTestMsg"></span>
       </div>
-      <p class="hint">Key 只存在你自己这台机器的浏览器里（localStorage），不写进任何文件、不进日志，刷新也不会丢。<br>AI 打分用的标准，就是 skill 自己写的判定规则：<a href="/api/skill-rules" target="_blank">打开看一眼</a>。</p>
+      <p class="hint">预算按“抽样 + 定向升级”的总段数算。Key 只存在你这台机器的浏览器里（localStorage），不写进任何文件、不进日志。<br>AI 实际使用的五分类契约：<a href="/api/skill-rules" target="_blank">打开看一眼</a>。</p>
     </section>
 
     <section class="card">
@@ -151,8 +155,16 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
       </div>
       <div class="pbar" id="pbar" hidden><i id="pbarFill"></i></div>
       <div class="bar-text" id="barText"></div>
-      <p class="hint" id="aiEst">整本一般要 <b>10–20 分钟</b>：引擎先把整本过一遍，再把拿不准的那几批发给你自己选的模型复核。上面这条进度会一直走，说明它还在干活，不是卡住了。中途刷新也不怕，回来会接着显示进度。</p>
+      <p class="hint" id="aiEst">整本一般要 <b>10–20 分钟</b>：引擎先判读整本，再抽样标定规则偏差，只把分歧大的桶按预算定向升级。上面这条进度会一直走，说明它还在干活。中途刷新也不怕，回来会接着显示进度。</p>
       <div class="log" id="log">（还没有开始）</div>
+    </section>
+
+    <section class="card" id="calCard" hidden>
+      <h2>标定结果</h2>
+      <p class="note" id="calSummary"></p>
+      <div class="tiers-line" id="calTiers"></div>
+      <div class="links" id="calLinks"></div>
+      <div class="log" id="calDisagreements" style="min-height:0"></div>
     </section>
 
     <section class="card">
@@ -182,6 +194,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
 <script>
 (function () {
   var job = null, timer = null, polling = false, beganAt = 0, resuming = false, exporting = false;
+  var calLoadedFor = '';
   var $ = function (id) { return document.getElementById(id); };
   var NET_TIP = '连不上本地服务：先确认「启动.bat」那个窗口还开着，地址栏是 http://127.0.0.1:8765/app，按 Ctrl+F5 刷新后再试。';
 
@@ -208,7 +221,10 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
         if (!res.ok) { $('status1').textContent = '出错：' + (res.j.error || '上传失败'); return; }
         job = res.j.job;
         store.set('job', job);
-        $('status1').textContent = '体检和抽查都好了：' + file.name;
+        calLoadedFor = '';
+        $('calCard').hidden = true;
+        $('status1').textContent = (res.j.reused ? '书架里已有这本书，已复用原记录：'
+                                                : '体检和抽查都好了：') + file.name;
         $('confirmOpen').href = res.j.confirm;
         $('confirmFrame').src = res.j.confirm;
         $('confirmBox').hidden = false;
@@ -255,12 +271,14 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
       if (saved.endpoint) $('endpoint').value = saved.endpoint;
       if (saved.model) $('model').value = saved.model;
       if (saved.key) $('key').value = saved.key;
+      if (saved.budget) $('budget').value = saved.budget;
     }
     function save() {
       store.set('ai', { provider: $('provider').value,
-        endpoint: $('endpoint').value.trim(), model: $('model').value.trim(), key: $('key').value });
+        endpoint: $('endpoint').value.trim(), model: $('model').value.trim(),
+        key: $('key').value, budget: $('budget').value });
     }
-    ['provider', 'endpoint', 'model', 'key'].forEach(function (id) {
+    ['provider', 'endpoint', 'model', 'key', 'budget'].forEach(function (id) {
       $(id).addEventListener('change', save);
       $(id).addEventListener('input', save);
     });
@@ -284,16 +302,18 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   function build(skipConfirm) {
     if (!job) return;
     beganAt = Date.now() / 1000;
+    calLoadedFor = '';
+    $('calCard').hidden = true;
     $('build').disabled = true; $('goBuild').disabled = true; $('epub').disabled = true;
     var ai = {
       endpoint: $('endpoint').value.trim(),
       model: $('model').value.trim(),
       key: $('key').value,
-      lo: 0.30, hi: 0.70, max: 400
+      max: parseInt($('budget').value, 10) || 800
     };
-    // AI 复核是必须的一层，没有关掉它的开关：三样缺一条就别发请求了，服务端也会回 400。
+    // AI 标定是必须的一层，没有关掉它的开关：三样缺一条就别发请求了，服务端也会回 400。
     if (!ai.endpoint || !ai.model || !ai.key) {
-      $('log').textContent = 'AI 复核是必须的一层：接口地址、模型名、Key 都填上才能出书。';
+      $('log').textContent = 'AI 标定是必须的一层：接口地址、模型名、Key 都填上才能出书。';
       $('build').disabled = false; $('goBuild').disabled = false; return;
     }
     fetch('/api/build', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job: job, ai: ai }) })
@@ -347,7 +367,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
   // ---------- 轮询 ----------
   var BUSY = ['build', 'ai', 'render', 'export'];
   var LABEL = { idle: '待命中', doctor: '正在体检', checked: '等你确认抽查页', build: '正在判读整本',
-                ai: '正在做 AI 复核', render: '正在重渲', export: '正在打包', ready: '好了',
+                ai: '正在做 AI 标定', render: '正在重渲', export: '正在打包', ready: '好了',
                 error: '出错', cancelled: '已取消' };
 
   function elapsed(s) {
@@ -363,11 +383,21 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
     if (BUSY.indexOf(s.phase) < 0) { bar.hidden = true; $('barText').textContent = ''; return; }
     bar.hidden = false;
     var p = s.progress || {}, total = p.total || 0, done = p.done || 0, bits = [];
+    var stageName = { sample: '抽样', ask: '问 AI', fit: '拟合桶', escalate: '定向升级',
+                      apply: '写回' };
+    if (p.stage) bits.push(stageName[p.stage] || p.stage);
     if (total > 0) {
       bar.className = 'pbar';
       fill.style.width = Math.round(100 * done / total) + '%';
-      bits.push('<b>第 ' + done + ' / ' + total + ' 批</b>');
-      if (p.reviewed) bits.push('已复核 ' + p.reviewed + ' 段');
+      if (p.stage === 'ask' || p.stage === 'escalate' || p.stage === 'direct') {
+        bits.push('<b>第 ' + done + ' / ' + total + ' 批</b>');
+      } else {
+        bits.push('<b>' + done + ' / ' + total + '</b>');
+      }
+      if (p.sampled) bits.push('已抽样 ' + p.sampled + ' 段');
+      if (p.fitted) bits.push('桶 ' + p.fitted);
+      if (p.escalated) bits.push('已升级 ' + p.escalated + ' 段');
+      if (p.reviewed) bits.push('已判定 ' + p.reviewed + ' 段');
       if (p.failed) bits.push('有 ' + p.failed + ' 批没返回');
     } else {
       bar.className = 'pbar wait';
@@ -421,6 +451,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
           $('expoMsg').textContent = ''; $('expoMsg').className = 'status';
         } else if (s.phase === 'ready' && s.result) {
           show(s.result);
+          loadCalibration();
           if (exporting) { exporting = false; $('expoMsg').textContent = '打包好了，下载链接在下面。'; }
         } else if (s.phase === 'error' && exporting) {
           exporting = false;
@@ -442,6 +473,45 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
       html += '<a href="' + f.url + '?dl=1">下载 ' + f.name + '（' + f.kb + ' KB）</a>';
     });
     $('links').innerHTML = html;
+    loadCalibration();
+  }
+
+  function loadCalibration() {
+    if (!job) return;
+    if (calLoadedFor === job) return;
+    calLoadedFor = job;
+    fetch('/api/calibration?job=' + encodeURIComponent(job))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (c) {
+        if (!c) { $('calCard').hidden = true; calLoadedFor = ''; return; }
+        var m = c.metrics || {};
+        var before = m.tier_before || {}, after = m.tier_after || {};
+        var fmt = function (o) {
+          return ['plot','mid','weak','fade','zero'].filter(function (k) { return o[k]; })
+            .map(function (k) { return k + ' ' + o[k]; }).join(' · ');
+        };
+        $('calCard').hidden = false;
+        $('calSummary').textContent = 'AI 个别裁定 ' +
+          ((c.n_sample || 0) + (c.n_escalated || 0)) + ' / ' +
+          (c.n_paras || 0) + ' 段（' +
+          Math.round((m.individual_coverage || 0) * 100) + '%）· 桶级标定 ' +
+          Math.round((m.bucket_coverage || 0) * 100) + '% · 待升级 ' +
+          (m.escalation_pending || 0) + ' 段';
+        $('calTiers').textContent = '标定前：' + (fmt(before) || '-') +
+          '　→　标定后：' + (fmt(after) || '-') +
+          (m.no_signal ? ' · 规则无信号 ' + m.no_signal + ' 段' : '');
+        $('calLinks').innerHTML =
+          '<a href="/work/' + encodeURIComponent(job) + '/calibration_report.txt" target="_blank">标定报告</a>' +
+          '<a href="/work/' + encodeURIComponent(job) + '/calibration.json" target="_blank">calibration.json</a>';
+        var ds = (c.disagreements || []).slice(0, 10);
+        $('calDisagreements').textContent = ds.length
+          ? ds.map(function (d) {
+              return d.pid + ' · ' + d.bucket + ' · AI ' + d.ai_label +
+                ' · ' + (d.quote || '') + ' · ' + (d.rule_note || '');
+            }).join('\n')
+          : '这次没有规则/AI 分歧。';
+      })
+      .catch(function () { calLoadedFor = ''; });
   }
 
   // ---------- 以前的书：把 work/ 里做过的书列出来，点一本接着用 ----------

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深浅 · 书架</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://api.fontshare.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;700&family=Noto+Serif+SC:wght@200;400&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=zodiak@100,300&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#e6dbc7;--surface:#ddd0b9;--ink:#062b8a;--muted:#31509b;--accent-ink:#e6dbc7;
+  --font-display:Zodiak,"Noto Serif SC","Songti SC",SimSun,serif;
+  --font-text:"Hanken Grotesk","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-text);font-size:17px;line-height:1.55}
+a{color:inherit}
+h1,h2,p{margin:0;padding:0}
+button{font:inherit;color:inherit}
+.wrap{max-width:880px;margin:0 auto;padding:32px 24px 72px}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:40px}
+.mark{font-family:var(--font-display);font-weight:300;font-size:26px;letter-spacing:.06em;text-decoration:none}
+.top nav a{font-size:15px;text-decoration:none;border-bottom:2px solid transparent;padding-bottom:2px;margin-left:20px}
+.top nav a:hover{border-bottom-color:var(--ink)}
+h1{font-family:var(--font-display);font-weight:300;font-size:clamp(28px,4vw,46px);line-height:1.05;letter-spacing:-.03em}
+.sub{color:var(--muted);max-width:60ch;margin-top:14px}
+.status{font-size:15px;color:var(--muted);margin-top:20px}
+.list{margin-top:24px;display:grid;gap:12px}
+.row{background:var(--surface);padding:20px 22px;display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap;cursor:pointer}
+.row:hover{background:#d6c6ab}
+@media (max-width:600px){.row{align-items:flex-start;flex-direction:column}}
+.title{display:block;font-family:var(--font-display);font-weight:300;font-size:22px;line-height:1.25;text-decoration:none}
+.title:hover{text-decoration:underline;text-underline-offset:4px}
+.meta{font-size:15px;color:var(--muted);margin-top:6px}
+.btns{display:flex;gap:10px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 16px;
+  border:0;background:var(--ink);color:var(--accent-ink);cursor:pointer;font-size:15px}
+.btn:hover{background:var(--muted)}
+.btn-quiet{background:var(--bg);color:var(--ink)}
+.btn-del{background:transparent;color:var(--muted);text-decoration:underline;text-underline-offset:3px}
+.btn-del:hover{background:transparent;color:#8a1c0f}
+.empty{background:var(--surface);padding:28px;font-size:16px;color:var(--muted)}
+.empty a{text-decoration:underline;text-underline-offset:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="mark" href="/">深浅</a>
+    <nav><a href="/">首页</a><a href="/app">工作台</a><a href="/read">阅读器</a><a href="/api/health" target="_blank">引擎状态</a></nav>
+  </header>
+
+  <h1>书架</h1>
+  <p class="sub">放在这台机器上的书。未判定的接着读原文，判定过的直接读深浅版。</p>
+  <div class="status" id="status">正在翻书架…</div>
+  <div class="list" id="list"></div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var STATE_LABEL = { source: '未判定', judged: '已判定', exported: '已导出' };
+  var KIND_LABEL = { txt: 'TXT', epub: 'EPUB' };
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function fmtProgress(p) {
+    if (!p || typeof p.chapter !== 'number') return '';
+    var pct = Math.round((p.ratio || 0) * 100);
+    return '读到 第' + (p.chapter + 1) + ' 章' + (pct ? ' · ' + pct + '%' : '');
+  }
+
+  function btn(label, cls, fn) {
+    var b = el('button', 'btn ' + (cls || ''), label);
+    b.type = 'button';
+    b.addEventListener('click', fn);
+    return b;
+  }
+
+  // 书架上的书统一进阅读器：把上次那点位置一并带上，直接续在那一屏。
+  // 阅读器会按书的状态自己选深浅版或原文。
+  function readHref(b) {
+    var p = b.progress || {};
+    var q = ['job=' + encodeURIComponent(b.id)];
+    if (typeof p.chapter === 'number') {
+      q.push('chapter=' + p.chapter);
+      q.push('ratio=' + (p.ratio || 0));
+    }
+    return '/read?' + q.join('&');
+  }
+
+  function openBook(b) {
+    location.href = readHref(b);
+  }
+
+  function readJudged(b) {
+    openBook(b);
+  }
+
+  function rename(b, after) {
+    var name = window.prompt('改成什么名字？', b.name || '');
+    if (name === null) return;
+    fetch('/api/library/rename', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ job: b.id, name: name }),
+    }).then(function (r) { return r.json(); })
+      .then(function () { after(); })
+      .catch(function () { $('status').textContent = '改名失败：服务没应答。'; });
+  }
+
+  function remove(b, after) {
+    var extra = (b.copies && b.copies > 1) ? '\n同一本书的 ' + b.copies + ' 份重复记录会一起删掉。' : '';
+    if (!window.confirm('删掉《' + (b.name || b.id) + '》？源文件、判定结果和导出成品都会没。' + extra)) return;
+    fetch('/api/job-delete', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ job: b.id }),
+    }).then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) { $('status').textContent = j.error; return; }
+        after();
+      })
+      .catch(function () { $('status').textContent = '删除失败：服务没应答。'; });
+  }
+
+  function rowOf(b) {
+    var row = el('div', 'row');
+    // 点整行都能开始读；改名、删除、下载仍走各自按钮，不跟着跳页。
+    row.addEventListener('click', function (e) {
+      if (e.target.closest('button, a, input, select, label')) return;
+      openBook(b);
+    });
+    var info = el('div', 'info');
+    var title = el('a', 'title', b.name || b.id);
+    title.href = readHref(b);
+    title.title = '在阅读器里打开';
+    info.appendChild(title);
+    var kinds = (b.kinds && b.kinds.length ? b.kinds : [b.kind])
+      .map(function (k) { return KIND_LABEL[k] || k; }).join(' + ');
+    var meta = [kinds, STATE_LABEL[b.state] || b.state, fmtProgress(b.progress)]
+      .filter(Boolean).join(' · ');
+    if (b.copies && b.copies > 1) meta += ' · 已合并 ' + b.copies + ' 份';
+    info.appendChild(el('div', 'meta', meta));
+    row.appendChild(info);
+
+    var btns = el('div', 'btns');
+    if (b.state === 'source') {
+      btns.appendChild(btn('继续读', '', function () { openBook(b); }));
+    } else {
+      var seen = b.progress && typeof b.progress.chapter === 'number';
+      btns.appendChild(btn(seen ? '继续读深浅版' : '读深浅版', '', function () { readJudged(b); }));
+    }
+    (b.files || []).forEach(function (f) {
+      btns.appendChild(btn('下载 ' + f.name, 'btn-quiet', function () {
+        location.href = f.url + '?dl=1';
+      }));
+    });
+    btns.appendChild(btn('改名', 'btn-quiet', function () { rename(b, load); }));
+    btns.appendChild(btn('删除', 'btn-del', function () { remove(b, load); }));
+    row.appendChild(btns);
+    return row;
+  }
+
+  function render(books) {
+    var list = $('list');
+    list.textContent = '';
+    if (!books.length) {
+      var empty = el('div', 'empty');
+      empty.innerHTML = '书架还是空的。去 <a href="/app">工作台</a> 放一本进来，' +
+        '或者在 <a href="/read">阅读器</a> 里打开一本——打开过的书都会留在这儿。';
+      list.appendChild(empty);
+      $('status').textContent = '';
+      return;
+    }
+    books.forEach(function (b) { list.appendChild(rowOf(b)); });
+    $('status').textContent = '共 ' + books.length + ' 本。';
+  }
+
+  function load() {
+    $('status').textContent = '正在翻书架…';
+    fetch('/api/library').then(function (r) { return r.json(); })
+      .then(function (j) { render((j && j.books) || []); })
+      .catch(function () { $('status').textContent = '读不到书架：本地服务没应答，看看「引擎状态」。'; });
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

@@ -13,6 +13,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "app"))
@@ -61,7 +62,7 @@ class TestReaderOf(WorkCase):
         self.assertEqual(E.reader_of(d).name, "book.html")
 
     def test_index_wins(self):
-        """AI 复核会重渲成 index.html，两个都在时以它为准。"""
+        """AI 标定会重渲成 index.html，两个都在时以它为准。"""
         d = self.make_job()
         (E.out_of(d) / "book.html").write_text("x", encoding="utf-8")
         (E.out_of(d) / "index.html").write_text("x", encoding="utf-8")
@@ -127,10 +128,288 @@ class TestSourceOf(WorkCase):
 
 
 class TestProgress(WorkCase):
-    """AI 复核的实时进度：没跑过要给空 dict，不能抛。"""
+    """AI 标定的实时进度：没跑过要给空 dict，不能抛。"""
 
     def test_empty_when_absent(self):
         self.assertEqual(E.read_progress(self.make_job()), {})
+
+
+class TestBookIdentity(WorkCase):
+    """同一本书反复导入 / 换格式导入，都不能在书架上变成另一本。"""
+
+    def _pair(self):
+        txt = "第1章 起\n\n甲\n\n乙\n\n第2章 落\n\n丙\n\n丁\n".encode("utf-8")
+        epub = make_epub([("第1章 起", ["甲", "乙"]),
+                          ("第2章 落", ["丙", "丁"])], title="书")
+        return txt, epub
+
+    def test_txt_and_epub_share_identity(self):
+        txt, epub = self._pair()
+        self.assertEqual(
+            E.book_key_of(B.read_book(txt, "书.txt"), "书.txt"),
+            E.book_key_of(B.read_book(epub, "书.epub"), "书.epub"),
+        )
+
+    def test_identity_ignores_cover_page(self):
+        txt, _ = self._pair()
+        epub = make_epub([("封面", ["x"]),
+                          ("第1章 起", ["甲", "乙"]),
+                          ("第2章 落", ["丙", "丁"])], title="书")
+        self.assertEqual(
+            E.book_key_of(B.read_book(txt, "书.txt"), "书.txt"),
+            E.book_key_of(B.read_book(epub, "书.epub"), "书.epub"),
+        )
+
+    def test_reimport_reuses_job(self):
+        txt, _ = self._pair()
+        job1, d1, reused1 = S.save_book_from_raw("书.txt", txt)
+        job2, d2, reused2 = S.save_book_from_raw("书.txt", txt)
+        self.assertEqual(job1, job2)
+        self.assertEqual(d1, d2)
+        self.assertFalse(reused1)
+        self.assertTrue(reused2)
+        self.assertEqual(len(list(self.work.iterdir())), 1)
+
+    def test_library_groups_legacy_duplicates(self):
+        txt, _ = self._pair()
+        _, d1 = E.new_job("书")
+        E.save_source(d1, "书.txt", txt)
+        _, d2 = E.new_job("书")
+        E.save_source(d2, "书.txt", txt)
+        E.set_progress(d1, 2, 0.5)
+        E.set_progress(d2, 5, 0.1)
+
+        books = S.library()
+        self.assertEqual(len(books), 1)
+        self.assertEqual(books[0]["copies"], 2)
+        self.assertEqual(books[0]["kinds"], ["txt"])
+        self.assertEqual(books[0]["progress"], {"chapter": 5, "ratio": 0.1})
+
+        # 门面固定后，读者往回重读时不能被另一份旧副本的更大章号拽回去。
+        canonical = S.job_dir(books[0]["id"])
+        E.set_progress(canonical, 1, 0.0)
+        self.assertEqual(S.library()[0]["progress"], {"chapter": 1, "ratio": 0.0})
+
+
+class TestReviewBridge(WorkCase):
+    def test_review_passes_budget_and_seed_not_fuzzy_band(self):
+        d = self.make_job()
+        seen = {}
+
+        def fake(args, timeout=0, env=None, job=None):
+            seen["args"] = args
+            return True, '{"asked": 0}'
+
+        with mock.patch.object(E, "_run", side_effect=fake):
+            ok, _, stats = E.review(d, "http://example/v1", "stub",
+                                    "secret", budget=800, seed=7)
+        self.assertTrue(ok)
+        self.assertEqual(stats["asked"], 0)
+        self.assertIn("--max", seen["args"])
+        self.assertEqual(seen["args"][seen["args"].index("--max") + 1], "800")
+        self.assertIn("--seed", seen["args"])
+        self.assertEqual(seen["args"][seen["args"].index("--seed") + 1], "7")
+        self.assertNotIn("--lo", seen["args"])
+        self.assertNotIn("secret", seen["args"])
+
+
+class TestKeepPersistence(WorkCase):
+    def test_keep_writes_analyzed_and_sidecar_and_reinjects(self):
+        d = self.make_job()
+        out = d / "out"
+        out.mkdir(exist_ok=True)
+        doc = {
+            "chapters": [{
+                "index": 1, "title": "第一章",
+                "paragraphs": [{
+                    "pid": "c1p1", "kind": "body", "text": "正文",
+                    "score": 0.55, "keep": False,
+                }],
+            }]
+        }
+        (out / "analyzed.json").write_text(json.dumps(doc), encoding="utf-8")
+        page = out / "ch0001.html"
+        page.write_text("<html><body><p class=\"p\">正文</p></body></html>",
+                        encoding="utf-8")
+
+        self.assertEqual(E.set_keep(d, "ch0001.html", 0, True), "c1p1")
+        saved = json.loads((out / "analyzed.json").read_text(encoding="utf-8"))
+        self.assertTrue(saved["chapters"][0]["paragraphs"][0]["keep"])
+        self.assertTrue(json.loads((d / "keeps.json").read_text(encoding="utf-8"))["c1p1"])
+
+        E._inject_keep_bridge(d, out)
+        html = page.read_text(encoding="utf-8")
+        self.assertIn("data-qs-keep-bridge", html)
+        self.assertIn("__qsInitialKeeps=[true]", html)
+
+        saved["chapters"][0]["paragraphs"][0]["keep"] = False
+        (out / "analyzed.json").write_text(json.dumps(saved), encoding="utf-8")
+        E._apply_keep_sidecar(d)
+        restored = json.loads((out / "analyzed.json").read_text(encoding="utf-8"))
+        self.assertTrue(restored["chapters"][0]["paragraphs"][0]["keep"])
+
+    def test_keep_index_skips_separator_markup(self):
+        d = self.make_job()
+        out = d / "out"
+        out.mkdir(exist_ok=True)
+        doc = {"chapters": [{"index": 1, "title": "第一章", "paragraphs": [
+            {"pid": "sep", "kind": "separator", "text": "---", "score": 0.0},
+            {"pid": "body1", "kind": "body", "text": "正文", "score": 0.55},
+        ]}]}
+        (out / "analyzed.json").write_text(json.dumps(doc), encoding="utf-8")
+        E.set_keep(d, "ch0001.html", 0, True)
+        saved = json.loads((out / "analyzed.json").read_text(encoding="utf-8"))
+        self.assertFalse(saved["chapters"][0]["paragraphs"][0].get("keep", False))
+        self.assertTrue(saved["chapters"][0]["paragraphs"][1]["keep"])
+
+
+class TestAndroidBudget(unittest.TestCase):
+    def test_android_uses_same_total_budget_and_batch(self):
+        text = (ROOT / "android" / "app" / "src" / "main" / "java" /
+                "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                    encoding="utf-8")
+        self.assertIn("const val AI_MAX = 800", text)
+        self.assertIn("const val AI_BATCH = 16", text)
+        self.assertIn("const val AI_CONCURRENCY = 3", text)
+
+
+class TestAndroidReaderIsolation(unittest.TestCase):
+    """阅读器直接添加的书只进阅读器，不能再借工作台的 stage / currentJob 串线。"""
+
+    def test_source_meta_always_parses_the_normalized_txt(self):
+        runner = (ROOT / "android" / "app" / "src" / "main" / "python" /
+                  "runner.py").read_text(encoding="utf-8")
+        self.assertIn("bookread.read_book(p.read_bytes(), p.name)", runner)
+        self.assertNotIn("bookread.read_book(p.read_bytes(), name or p.name)", runner)
+
+    def test_reader_has_separate_state_and_back_target(self):
+        ui = (ROOT / "android" / "app" / "src" / "main" / "java" /
+              "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                  encoding="utf-8")
+        self.assertIn("private var readerStage: Stage", ui)
+        self.assertIn("private var readerJob: String", ui)
+        self.assertIn("stage = readerStage", ui)
+        self.assertIn("Page.Reader -> backFromReader()", ui)
+        self.assertIn('callAttr("source_meta", src.absolutePath, src.name)', ui)
+
+
+class TestAndroidShelfStates(unittest.TestCase):
+    """书架要分清加载 / 失败 / 空，导出按钮要认自己那一份文件。"""
+
+    def test_shelf_has_distinct_loading_and_error_state(self):
+        ui = (ROOT / "android" / "app" / "src" / "main" / "java" /
+              "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                  encoding="utf-8")
+        self.assertIn("private var shelfLoading: Boolean", ui)
+        self.assertIn("private var shelfError: String", ui)
+        self.assertIn("if (loading && books.isEmpty())", ui)
+        self.assertIn("if (error.isNotBlank())", ui)
+        self.assertIn("QsButton(\"重试\", onReload", ui)
+
+    def test_export_callback_carries_the_clicked_filename(self):
+        ui = (ROOT / "android" / "app" / "src" / "main" / "java" /
+              "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                  encoding="utf-8")
+        self.assertIn("onExport: (ShelfBook, String) -> Unit", ui)
+        self.assertIn("onExport(b, f)", ui)
+        self.assertIn("private fun exportFromShelf(book: ShelfBook, fileName: String)", ui)
+        self.assertNotIn("book.files.firstOrNull()?.let", ui)
+
+    def test_android_export_strips_original_epub_suffix(self):
+        ui = (ROOT / "android" / "app" / "src" / "main" / "java" /
+              "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                  encoding="utf-8")
+        self.assertIn('Regex("""\\.(txt|epub)$""", RegexOption.IGNORE_CASE)', ui)
+
+
+class TestAndroidMergedProgress(unittest.TestCase):
+    """合并历史副本时，门面书没进度要迁入最远位置；已有进度不能被旧副本覆盖。"""
+
+    def test_canonical_adopts_best_progress_only_when_missing(self):
+        ui = (ROOT / "android" / "app" / "src" / "main" / "java" /
+              "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                  encoding="utf-8")
+        self.assertIn("adoptBestProgress(canonical, ds)", ui)
+        self.assertIn("private fun bestShelfProgress(ds: List<File>): JSONObject?", ui)
+        self.assertIn("if (own != null && own.optInt(\"chapter\", -1) >= 0) return", ui)
+        self.assertIn("meta.put(\"progress\", best)", ui)
+
+
+class TestAndroidAiMandatory(unittest.TestCase):
+    """analyzed.json 不等于 AI 已完成；工作台不能复用旧结果或绕过导出闸门。"""
+
+    def test_ai_success_marker_is_written_after_review_and_render(self):
+        runner = (ROOT / "android" / "app" / "src" / "main" / "python" /
+                  "runner.py").read_text(encoding="utf-8")
+        self.assertIn('marker = src_dir / "ai_ok.json"', runner)
+        self.assertIn('"analyzed_sha256": hashlib.sha256(analyzed.read_bytes()).hexdigest()', runner)
+
+    def test_workbench_requires_current_ai_marker(self):
+        ui = (ROOT / "android" / "app" / "src" / "main" / "java" /
+              "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                  encoding="utf-8")
+        self.assertIn("private fun aiReady(dir: File): Boolean", ui)
+        self.assertIn("if (aiReady(target))", ui)
+        self.assertIn("clearAiReady(dir)", ui)
+        self.assertIn('require(aiReady(dir)) { "AI 复核还没完整跑完', ui)
+        self.assertIn("enabled = hasOut && hasAi", ui)
+
+    def test_upload_confirmation_stays_on_workbench(self):
+        ui = (ROOT / "android" / "app" / "src" / "main" / "java" /
+              "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                  encoding="utf-8")
+        start = ui.index("private fun runDoctor")
+        end = ui.index("// ---------- 整本", start)
+        self.assertNotIn("goToPage(Page.Reader)", ui[start:end])
+
+
+class TestAndroidReaderToc(unittest.TestCase):
+    """阅读器要有目录入口，目录页不能覆盖正文章节进度。"""
+
+    def test_reader_opens_generated_toc_page(self):
+        ui = (ROOT / "android" / "app" / "src" / "main" / "java" /
+              "com" / "qianshen" / "app" / "MainActivity.kt").read_text(
+                  encoding="utf-8")
+        self.assertIn("private fun openReaderToc()", ui)
+        self.assertIn('QsButton("目录", onToc', ui)
+        self.assertIn("readerStage = s.copy(html = toc, version = s.version + 1)", ui)
+        self.assertIn("page !in chapterFiles", ui)
+
+
+class TestRenderTarget(WorkCase):
+    """复核后的重渲必须写回 build 实际使用的路径，不能生成 out/index/。"""
+
+    def test_split_target_is_directory(self):
+        d = self.make_job()
+        out = d / "out"
+        out.mkdir(exist_ok=True)
+        (out / "index.html").write_text("old", encoding="utf-8")
+        seen = {}
+
+        def fake(args, timeout=0, env=None, job=None):
+            seen["args"] = args
+            return True, "ok"
+
+        with mock.patch.object(E, "_run", side_effect=fake):
+            E.render(d)
+        target = Path(seen["args"][seen["args"].index("-o") + 1])
+        self.assertEqual(target, out)
+
+    def test_single_target_is_book_html(self):
+        d = self.make_job()
+        out = d / "out"
+        out.mkdir(exist_ok=True)
+        (out / "book.html").write_text("old", encoding="utf-8")
+        seen = {}
+
+        def fake(args, timeout=0, env=None, job=None):
+            seen["args"] = args
+            return True, "ok"
+
+        with mock.patch.object(E, "_run", side_effect=fake):
+            E.render(d)
+        target = Path(seen["args"][seen["args"].index("-o") + 1])
+        self.assertEqual(target, out / "book.html")
 
 
 # ---------- app/server.py ----------
