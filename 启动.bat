@@ -64,7 +64,8 @@ exit /b 0
 :no_python
 echo.
 echo 没找到可用的 Python（深浅需要 3.10 或更高版本）。
-echo 深浅只用标准库，装好 Python 之后不需要再装任何第三方包。
+echo 装好 Python 后，还要在项目目录执行一次依赖安装：
+echo     python -m pip install -r requirements.txt
 echo.
 echo 这就帮你打开下载页。安装时请务必勾上 Add python.exe to PATH 这一项。
 echo 装好之后关掉本窗口，重新双击 启动.bat 就行。如果还是不行，

@@ -4,8 +4,8 @@
     python -m unittest discover -s tests -v                  # 快套（秒级）
     $env:WNF_SLOW="1"; python -m unittest discover -s tests -v   # 连完整链路
 
-为什么单独测接口：网页端之后要接 Android，两边共用同一套 /api/*，
-字段名一旦悄悄改名，另一个端就会莫名崩。这里把字段、状态码、错误信息钉住。
+为什么单独测接口：网页端和外部 HTTP 客户端共用同一套 /api/*，
+字段名一旦悄悄改名，另一个客户端就会莫名崩。这里把字段、状态码、错误信息钉住。
 
 服务器起在系统随机端口（127.0.0.1:0），不碰你平时在用的 8765。
 """
@@ -372,10 +372,21 @@ class TestUploadValidation(ApiCase):
             code, second = self.upload(raw, "同一本.txt")
             self.assertEqual(code, 200, second)
         self.assertEqual(first["job"], second["job"])
+        self.assertEqual(first["result"]["name"], "同一本")
+        self.assertEqual(second["result"]["name"], "同一本")
         self.assertIs(second["reused"], True)
         code, library = self.http_json("GET", "/api/library")
         self.assertEqual(code, 200)
         self.assertEqual(len(library["books"]), 1)
+
+    def test_doctor_failure_keeps_error_contract(self):
+        """体检失败也要走统一的 {"error": ...} 错误形状。"""
+        with mock.patch.object(E, "doctor", return_value=(False, "boom", Path("missing"))):
+            code, data = self.upload(sample_txt(2), "体检失败.txt")
+        self.assertEqual(code, 500)
+        self.assertIn("error", data)
+        self.assertEqual(data["phase"], "error")
+        self.assertIn("boom", data["log"][0])
 
     def test_pdf_rejected(self):
         code, data = self.post_file("/api/upload", b"%PDF-1.4", "a.pdf")

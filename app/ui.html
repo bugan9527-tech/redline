@@ -142,7 +142,7 @@ h1{font-family:var(--font-display);font-weight:300;font-size:clamp(30px,4.2vw,54
         <button class="btn btn-sm btn-quiet" id="aiTest" type="button">测试连接</button>
         <span class="status" id="aiTestMsg"></span>
       </div>
-      <p class="hint">预算按“抽样 + 定向升级”的总段数算。Key 只存在你这台机器的浏览器里（localStorage），不写进任何文件、不进日志。<br>AI 实际使用的五分类契约：<a href="/api/skill-rules" target="_blank">打开看一眼</a>。</p>
+      <p class="hint">预算按“抽样 + 定向升级”的总段数算。Key 存在这台机器的浏览器 localStorage 里；服务端不写进 work/ 或日志，但浏览器会保留它，且不是加密存储。公共电脑上用完请清除。<br>AI 实际使用的五分类契约：<a href="/api/skill-rules" target="_blank">打开看一眼</a>。</p>
     </section>
 
     <section class="card">

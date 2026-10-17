@@ -551,22 +551,26 @@ class Handler(BaseHTTPRequestHandler):
             confirm = d / "confirm" / "book.html"
             if confirm.is_file():
                 phase = phase_on_disk(d)
+                result = E.result_of(d)
                 set_state(job, phase=phase, done=phase == "ready", error=None,
-                          result=E.result_of(d))
+                          result=result)
                 return self.send_json({"job": job, "phase": phase,
-                                       "confirm": E.result_of(d)["confirm"],
-                                       "reused": reused})
+                                       "confirm": result["confirm"],
+                                       "reused": reused, "result": result})
             src = E.source_of(d)
             set_state(job, phase="doctor", done=False, error=None)
             ok, log, confirm = E.doctor(d, src, job=job)
             log_line(job, log)
             if not ok or not confirm.exists():
                 set_state(job, phase="error", done=True, error="体检 / 抽查失败，看日志。")
-                return self.send_json({"job": job, "phase": "error", "log": [log[-1200:]]}, 500)
-            set_state(job, phase="checked", done=False, result=E.result_of(d))
+                return self.send_json({"error": "体检 / 抽查失败，看日志。",
+                                       "job": job, "phase": "error",
+                                       "log": [log[-1200:]]}, 500)
+            result = E.result_of(d)
+            set_state(job, phase="checked", done=False, result=result)
             return self.send_json({"job": job, "phase": "checked",
-                                   "confirm": E.result_of(d)["confirm"],
-                                   "reused": reused})
+                                   "confirm": result["confirm"],
+                                   "reused": reused, "result": result})
 
         if path == "/api/read":
             n = int(self.headers.get("content-length") or 0)
@@ -576,7 +580,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(413, "文件超过 80 MB")
             raw = self.rfile.read(n)
             name = unquote(self.headers.get("x-filename") or "book.txt")
-            # 默认纯解析、不落盘（Android 端与老客户端还走这条路）；带 shelf=1 才落盘入架，
+            # 默认纯解析、不落盘（老客户端和外部调用还走这条路）；带 shelf=1 才落盘入架，
             # 这是网页端阅读器拖文件进来的那条——书要留在书架上，下次不用重选。
             shelf = (parse_qs(urlparse(self.path).query).get("shelf") or [""])[0] == "1"
             try:
