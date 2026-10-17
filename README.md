@@ -179,9 +179,13 @@ TXT 是未经工作台处理的原文，所以移动端不依赖跨格式合并�
 `job` 也是本地生成的。改动共同引擎或 `runner.py` 仍要按兼容性对待；如果你在做一个走
 HTTP 的 Android 客户端，再按下面的句柄和轮询语义接入。
 
-Android 构建另外需要 JDK 17、Android SDK、Gradle 和 Chaquopy；当前
-`android/app/build.gradle.kts` 里的 `buildPython` 固定为作者机器的 Python 3.10 路径，
-换机器构建前要先改成本机路径。
+Android 构建另外需要 JDK 17、Android SDK、Gradle、Chaquopy，以及构建机上的 Python 3.10。
+这个 Python 只用于打包（安装依赖、编译字节码），APK 运行时会自带 Python，手机端不需要另装。
+Chaquopy 会按 App 的 `version = "3.10"` 自动查找解释器：Windows 上依次尝试 `py -3.10`、
+`py -3`，Linux/macOS 上尝试 `python3.10`、`python3`。如果 Python 3.10 装在非常规位置，
+可以在 `android/local.properties` 写 `buildPython=C:/path/to/python.exe`，或构建时加
+`-PbuildPython=...` / 设置 `BUILD_PYTHON` 环境变量；优先级为 Gradle 属性 > 环境变量 >
+`local.properties`。Windows 上不要指向 Microsoft Store 的占位 `python.exe`。
 
 **任务句柄（HTTP 客户端）**：一切后续操作都靠 `/api/upload` 返回的 `job`。
 浏览器端把 `job` 存在 `localStorage`，HTTP 客户端也应持久化，进程被杀之后还能接回去。
@@ -276,5 +280,5 @@ AI 标定期间 `stage` 依次为 `sample → ask → fit → escalate → apply
 - 单机单进程：并发没有管制，`work/` 也不会自动回收，用「删掉」自己清
 - **桌面分发仍依赖本机有 Python**：Python 不打包进仓库。`启动.bat` 会先认 `py` 启动器、
   再用 `where python` 兜底（并排掉微软商店那个假 `python.exe`），版本低于 3.10 就直接提示并
-  打开下载页；但换一台没装 Python 的机器，仍要用户先自己装一次。Android APK 由 Chaquopy
-  自带 Python，不受这一条影响
+  打开下载页；但换一台没装 Python 的机器，仍要用户先自己装一次。Android APK 运行时由
+  Chaquopy 自带 Python，不受这一条影响；但构建 Android APK 的机器仍需 Python 3.10

@@ -163,11 +163,23 @@ androidComponents {
     }
 }
 
+// 构建机上的 Python 3.10 由 Chaquopy 按 version 自动查找。
+// 只有装在非常规位置或 CI 需要固定解释器时才覆盖：
+// -PbuildPython=... > BUILD_PYTHON 环境变量 > android/local.properties 的 buildPython。
+val localPropsFile = rootProject.file("local.properties")
+val localProps = Properties().apply {
+    if (localPropsFile.exists()) localPropsFile.inputStream().use { load(it) }
+}
+val buildPythonOverride = providers.gradleProperty("buildPython").orNull
+    ?: providers.environmentVariable("BUILD_PYTHON").orNull
+    ?: localProps.getProperty("buildPython")
+
 chaquopy {
     defaultConfig {
         version = "3.10"
         // 构建机的 Python 必须与 App 同一次版本，否则 pip 装不了。
-        buildPython("C:/Users/PC/AppData/Local/Programs/Python/Python310/python.exe")
+        // 不设置时 Chaquopy 会按 App 版本自动查找；显式覆盖只用于非常规安装位置。
+        buildPythonOverride?.let { buildPython(it) }
         pip {
             // render.py 顶层 from jinja2 import Template —— 运行期硬依赖。
             install("jinja2")
