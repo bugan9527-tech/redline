@@ -2906,6 +2906,7 @@ private class ReaderLook(
     val accentInk: String,  // 压在 ink 上的字色；网页 --accent-ink
     val plot: String,       // 情节档墨色；网页 --t-plot
     val mid: String,        // 普通档墨色；网页 --t-mid（正文基准色）
+    val weak: String,       // 水档墨色；网页 --t-weak（偏水/注水/零信息合并成这一档）
 )
 
 private val READER_THEMES = listOf(
@@ -2927,10 +2928,10 @@ private val FONT_STACKS = mapOf(
  * 三级灰阶也比暖米色更容易拉开差距。
  */
 private val READER_LOOKS = mapOf(
-    "light" to ReaderLook("#ddd0b9", "#e6dbc7", "#062b8a", "#31509b", "#e6dbc7", "#111111", "#333333"),
-    "dark" to ReaderLook("#141516", "#0e0f10", "#f2f2f2", "#9aa0a6", "#141516", "#ffffff", "#cfd2d4"),
-    "green" to ReaderLook("#dbe6d2", "#cfdcc4", "#1e3a26", "#4a6b50", "#eef4e8", "#12200f", "#2c3a28"),
-    "invert" to ReaderLook("#1f2c42", "#192438", "#f9d475", "#c8ad60", "#192438", "#ffffff", "#d7dce6"),
+    "light" to ReaderLook("#ddd0b9", "#e6dbc7", "#062b8a", "#31509b", "#e6dbc7", "#111111", "#333333", "#999999"),
+    "dark" to ReaderLook("#141516", "#0e0f10", "#f2f2f2", "#9aa0a6", "#141516", "#ffffff", "#cfd2d4", "#6f7479"),
+    "green" to ReaderLook("#dbe6d2", "#cfdcc4", "#1e3a26", "#4a6b50", "#eef4e8", "#12200f", "#2c3a28", "#7d8b76"),
+    "invert" to ReaderLook("#1f2c42", "#192438", "#f9d475", "#c8ad60", "#192438", "#ffffff", "#d7dce6", "#7e879a"),
 )
 
 /** 行距/段距留两位小数，且用点作小数点——本地化若把小数点写成逗号，CSS 会直接崩。 */
@@ -2966,9 +2967,10 @@ private fun parsePrefs(key: String): ReadPrefs {
  * 把设置编成一段 JS：往文档里塞/更新一条 <style id="qs-look">。
  * 只改样式，不动引擎固有的结构与档位（强度滑杆照旧）。
  *
- * 主题：引擎那份 HTML 的正文底是 --paper、文字色继承 --ink、档位靠 opacity 淡化。这里把
- * --paper 落到主题的 surface、正文基准色落到 t-mid（与网页端"近黑墨色"同一口径）、情节档
- * 换成 t-plot——深色主题下这两档反过来是亮的，重点不会沉底。
+ * 主题：引擎那份 HTML 的正文底是 --paper、文字色继承 --ink、档位靠 opacity 淡化——但透明度在
+ * 小差距上肉眼分不出来，弱档看上去和正文没区别。这里跟网页端 reader.html 对齐成三档实色：
+ * 情节档 t-plot、普通档 t-mid、水档（偏水/注水/零信息合并）t-weak，引擎的 opacity 淡化直接归零。
+ * 深色主题下这三档反过来是"亮→暗"，重点不会沉底。
  * 版式：字体/行距/段距/页宽/对齐逐项对到网页端阅读页那几条变量（--font-read / --read-lh /
  * --read-gap / --read-width / --read-align），正文首行缩进 2em 也照网页端那一档。
  * 亮度按网页端 .veil 的做法：盖一层纯黑、只调透明度，绝不改字色（改字色就等于偷偷换了主题）。
@@ -2985,7 +2987,7 @@ private fun prefsJs(key: String): String {
     val line = rgba(l.muted, 0.35)
     val css = """
 :root{--paper:${l.surface};--ink:${l.ink};--rule:$line;--accent:${l.ink};
---t-plot:${l.plot};--t-mid:${l.mid};}
+--t-plot:${l.plot};--t-mid:${l.mid};--t-weak:${l.weak};}
 body{background:${l.surface};color:${l.ink};}
 .bar{background:${l.bg};border-bottom:1px solid $line;}
 .bar label,.bar .hint,.stats,.toc .meta,.nav .mid,.toggle{color:${l.muted};}
@@ -2994,8 +2996,11 @@ button{background:${l.bg};border-color:$line;color:${l.ink};}
 button[aria-pressed="true"]{background:${l.ink};border-color:${l.ink};color:${l.accentInk};}
 input[type=range]{accent-color:${l.ink};}
 main{max-width:${width}em;}
-.p{font-family:$font;line-height:$lh;text-align:$align;text-indent:2em;margin-bottom:${gap}em;color:${l.mid};}
+/* 三档实色，不用引擎的 opacity 淡化：透明度在小差距上肉眼分不出来（与网页端 reader.html 同一口径）。
+   先把引擎按档位调的透明度归零，再按 plot / mid / weak（偏水·注水·零信息合并）三档给实色。 */
+.p{opacity:1 !important;font-family:$font;line-height:$lh;text-align:$align;text-indent:2em;margin-bottom:${gap}em;color:${l.mid};}
 body[data-emphasis="1"] .p[data-tier="plot"]{color:${l.plot};}
+.p[data-tier="weak"],.p[data-tier="fade"],.p[data-tier="zero"]{color:${l.weak};}
 .p:hover::after{background:${l.bg};border-color:$line;color:${l.muted};}
 .toc a{color:${l.ink};}.toc a:hover{color:${l.ink};}
 .nav a{color:${l.ink};}
